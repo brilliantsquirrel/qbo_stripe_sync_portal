@@ -1,0 +1,297 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ─── Enums ───────────────────────────────────────────────────────────────────
+
+enum VendorRole {
+  VENDOR
+  PLATFORM_ADMIN
+}
+
+enum Tier {
+  STARTER
+  GROWTH
+  PROFESSIONAL
+  ENTERPRISE
+}
+
+enum SubscriptionStatus {
+  TRIALING
+  ACTIVE
+  PAST_DUE
+  CANCELED
+}
+
+enum InvoiceStatus {
+  UNPAID
+  PARTIAL
+  PAID
+  VOID
+}
+
+enum PaymentStatus {
+  PENDING
+  PROCESSING
+  SUCCEEDED
+  FAILED
+  REFUNDED
+}
+
+enum SyncTrigger {
+  SCHEDULED
+  MANUAL
+  WEBHOOK
+}
+
+enum SyncStatus {
+  RUNNING
+  COMPLETED
+  FAILED
+}
+
+// ─── Vendors (the app's paying customers / companies) ────────────────────────
+
+model Vendor {
+  id                       String             @id @default(cuid())
+  name                     String
+  email                    String             @unique
+  passwordHash             String
+  role                     VendorRole         @default(VENDOR)
+  // Platform-level Stripe billing (vendor pays US for the SaaS subscription)
+  platformStripeCustomerId String?
+  platformSubscriptionId   String?
+  subscriptionTier         Tier               @default(STARTER)
+  subscriptionStatus       SubscriptionStatus @default(TRIALING)
+  // Relations
+  qboConnection            QboConnection?
+  stripeConnection         StripeConnection?
+  customers                Customer[]
+  invoices                 Invoice[]
+  creditMemos              CreditMemo[]
+  payments                 Payment[]
+  syncLogs                 SyncLog[]
+  syncConfig               SyncConfig?
+  usageRecords             UsageRecord[]
+  createdAt                DateTime           @default(now())
+  updatedAt                DateTime           @updatedAt
+}
+
+// ─── QBO OAuth connection per vendor ────────────────────────────────────────
+
+model QboConnection {
+  id             String   @id @default(cuid())
+  vendorId       String   @unique
+  vendor         Vendor   @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  realmId        String   // QBO company ID
+  accessToken    String   // encrypted at rest
+  refreshToken   String   // encrypted at rest
+  tokenExpiresAt DateTime
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+}
+
+// ─── Stripe connection per vendor (their customer-facing Stripe account) ─────
+
+model StripeConnection {
+  id              String   @id @default(cuid())
+  vendorId        String   @unique
+  vendor          Vendor   @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  stripeAccountId String?  // if using Stripe Connect
+  secretKey       String   // encrypted restricted key
+  publishableKey  String
+  webhookSecret   String   // encrypted
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+}
+
+// ─── Sync configuration per vendor ───────────────────────────────────────────
+
+model SyncConfig {
+  id               String    @id @default(cuid())
+  vendorId         String    @unique
+  vendor           Vendor    @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  frequencyMinutes Int       @default(60)
+  lastSyncAt       DateTime?
+  nextSyncAt       DateTime?
+  cloudTaskName    String?   // GCP Cloud Tasks task name for scheduled sync
+  updatedAt        DateTime  @updatedAt
+}
+
+// ─── End customers (belong to a vendor) ──────────────────────────────────────
+
+model Customer {
+  id               String            @id @default(cuid())
+  vendorId         String
+  vendor           Vendor            @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  email            String
+  name             String
+  phone            String?
+  // External IDs
+  qboCustomerId    String?
+  stripeCustomerId String?
+  // Auto-pay settings
+  autoPayEnabled   Boolean           @default(false)
+  autoPayMethodId  String?           // Stripe PaymentMethod ID for auto-pay
+  autoPayThreshold Int?              // Only auto-pay if balance >= this (cents)
+  // Payment reviewer: another customer who must approve payments before processing
+  reviewerId       String?
+  reviewer         Customer?         @relation("ReviewerRelation", fields: [reviewerId], references: [id])
+  reviewees        Customer[]        @relation("ReviewerRelation")
+  // Relations
+  magicTokens      MagicToken[]
+  sessions         CustomerSession[]
+  invoices         Invoice[]
+  payments         Payment[]
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+
+  @@unique([vendorId, email])
+  @@unique([vendorId, qboCustomerId])
+  @@unique([vendorId, stripeCustomerId])
+}
+
+// ─── Magic link / OTP tokens for customer auth ───────────────────────────────
+
+model MagicToken {
+  id         String    @id @default(cuid())
+  customerId String
+  customer   Customer  @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  tokenHash  String    @unique // SHA-256 hash of the 6-digit OTP
+  expiresAt  DateTime
+  usedAt     DateTime?
+  createdAt  DateTime  @default(now())
+}
+
+// ─── Customer sessions ────────────────────────────────────────────────────────
+
+model CustomerSession {
+  id           String   @id @default(cuid())
+  customerId   String
+  customer     Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  sessionToken String   @unique
+  expiresAt    DateTime
+  createdAt    DateTime @default(now())
+}
+
+// ─── Invoices (canonical copy in DB, synced from QBO and Stripe) ─────────────
+
+model Invoice {
+  id              String            @id @default(cuid())
+  vendorId        String
+  vendor          Vendor            @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  customerId      String
+  customer        Customer          @relation(fields: [customerId], references: [id])
+  // External IDs
+  qboInvoiceId    String?
+  stripeInvoiceId String?
+  invoiceNumber   String?
+  // Amounts (all in cents to avoid floating point issues)
+  status          InvoiceStatus     @default(UNPAID)
+  amountTotal     Int               // total invoice amount in cents
+  amountPaid      Int               @default(0)
+  amountDue       Int               // amountTotal - amountPaid
+  currency        String            @default("usd")
+  // Dates
+  dueDate         DateTime?
+  issuedAt        DateTime
+  // Sync timestamps (used for conflict resolution: most recently modified wins)
+  qboUpdatedAt    DateTime?
+  stripeUpdatedAt DateTime?
+  // Relations
+  lineItems       InvoiceLineItem[]
+  payments        Payment[]
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+
+  @@unique([vendorId, qboInvoiceId])
+  @@unique([vendorId, stripeInvoiceId])
+}
+
+model InvoiceLineItem {
+  id          String  @id @default(cuid())
+  invoiceId   String
+  invoice     Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  description String
+  quantity    Float
+  unitPrice   Int     // cents
+  amount      Int     // cents
+}
+
+// ─── Payments (recorded after successful Stripe charge + synced to QBO) ──────
+
+model Payment {
+  id                    String        @id @default(cuid())
+  vendorId              String
+  vendor                Vendor        @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  invoiceId             String
+  invoice               Invoice       @relation(fields: [invoiceId], references: [id])
+  customerId            String
+  customer              Customer      @relation(fields: [customerId], references: [id])
+  // External IDs
+  stripePaymentIntentId String?       @unique
+  qboPaymentId          String?       @unique
+  // Amount
+  amount                Int           // cents
+  currency              String        @default("usd")
+  status                PaymentStatus @default(PENDING)
+  // Sync timestamps
+  stripeUpdatedAt       DateTime?
+  qboUpdatedAt          DateTime?
+  createdAt             DateTime      @default(now())
+  updatedAt             DateTime      @updatedAt
+}
+
+// ─── Credit memos (sourced from QBO, displayed to customers) ─────────────────
+
+model CreditMemo {
+  id              String    @id @default(cuid())
+  vendorId        String
+  vendor          Vendor    @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  customerId      String
+  qboCreditMemoId String
+  amount          Int       // cents
+  remainingCredit Int       // cents
+  currency        String    @default("usd")
+  issuedAt        DateTime
+  qboUpdatedAt    DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@unique([vendorId, qboCreditMemoId])
+}
+
+// ─── Sync audit log ───────────────────────────────────────────────────────────
+
+model SyncLog {
+  id               String      @id @default(cuid())
+  vendorId         String
+  vendor           Vendor      @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  trigger          SyncTrigger
+  status           SyncStatus  @default(RUNNING)
+  recordsProcessed Int         @default(0)
+  errors           Json?       // array of {entity, id, message}
+  startedAt        DateTime    @default(now())
+  completedAt      DateTime?
+}
+
+// ─── Vendor platform usage for tiered billing ────────────────────────────────
+
+model UsageRecord {
+  id               String    @id @default(cuid())
+  vendorId         String
+  vendor           Vendor    @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  periodStart      DateTime
+  periodEnd        DateTime
+  invoicesSynced   Int       @default(0)
+  revenueProcessed Int       @default(0) // cents — total payments processed this period
+  reportedAt       DateTime? // when this was reported to Stripe Billing
+  createdAt        DateTime  @default(now())
+}
