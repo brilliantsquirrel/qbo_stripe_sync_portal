@@ -1,4 +1,5 @@
 import { cookies } from "next/headers";
+import { redirect } from "next/navigation";
 import { getCustomerFromSession } from "@/lib/auth/magic-link";
 import { auth } from "@/lib/auth/config";
 
@@ -35,10 +36,7 @@ export async function getCurrentVendor() {
  */
 export async function requireCustomer() {
   const customer = await getCurrentCustomer();
-  if (!customer) {
-    const { redirect } = await import("next/navigation");
-    redirect("/login");
-  }
+  if (!customer) redirect("/login");
   return customer;
 }
 
@@ -47,10 +45,7 @@ export async function requireCustomer() {
  */
 export async function requireVendor() {
   const vendor = await getCurrentVendor();
-  if (!vendor) {
-    const { redirect } = await import("next/navigation");
-    redirect("/admin-login");
-  }
+  if (!vendor) redirect("/admin-login");
   return vendor;
 }
 
@@ -59,9 +54,6 @@ export async function requireVendor() {
  */
 export async function requirePlatformAdmin() {
   const vendor = await requireVendor();
-  if (vendor.role !== "PLATFORM_ADMIN") {
-    const { redirect } = await import("next/navigation");
-    redirect("/vendor/dashboard");
-  }
+  if (vendor.role !== "PLATFORM_ADMIN") redirect("/vendor/dashboard");
   return vendor;
 }

@@ -2,6 +2,8 @@ import { requireVendor } from "@/lib/auth/session";
 import { prisma } from "@/lib/db/client";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { AnchorButton } from "@/components/shared/link-button";
+import { formatMoney } from "@/lib/utils/money";
 
 export default async function VendorCustomersPage() {
   const vendor = await requireVendor();
@@ -32,6 +34,7 @@ export default async function VendorCustomersPage() {
                 <th className="text-left px-4 py-3 font-medium">Connections</th>
                 <th className="text-right px-4 py-3 font-medium">Invoices</th>
                 <th className="text-right px-4 py-3 font-medium">Outstanding</th>
+                <th className="px-4 py-3" />
               </tr>
             </thead>
             <tbody>
@@ -58,18 +61,28 @@ export default async function VendorCustomersPage() {
                     <td className="px-4 py-3 text-right font-semibold">
                       {outstanding > 0 ? (
                         <span className="text-red-600">
-                          ${(outstanding / 100).toFixed(2)}
+                          {formatMoney(outstanding)}
                         </span>
                       ) : (
                         <span className="text-gray-400">—</span>
                       )}
+                    </td>
+                    <td className="px-4 py-3 text-right">
+                      <AnchorButton
+                        href={`/api/vendor/customers/${c.id}/impersonate`}
+                        size="sm"
+                        variant="outline"
+                        target="_blank"
+                      >
+                        View portal ↗
+                      </AnchorButton>
                     </td>
                   </tr>
                 );
               })}
               {customers.length === 0 && (
                 <tr>
-                  <td colSpan={5} className="px-4 py-8 text-center text-gray-500">
+                  <td colSpan={6} className="px-4 py-8 text-center text-gray-500">
                     No customers synced yet. Run a sync to import customers.
                   </td>
                 </tr>

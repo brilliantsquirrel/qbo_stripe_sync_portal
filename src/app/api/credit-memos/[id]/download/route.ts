@@ -24,7 +24,7 @@ export async function GET(
 
   try {
     const pdf = await fetchQboCreditMemoPdf(customer.vendorId, memo.qboCreditMemoId);
-    return new NextResponse(pdf, {
+    return new NextResponse(new Uint8Array(pdf), {
       headers: {
         "Content-Type": "application/pdf",
         "Content-Disposition": `attachment; filename="credit-memo-${memo.qboCreditMemoId}.pdf"`,

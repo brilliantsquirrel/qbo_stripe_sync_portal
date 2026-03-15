@@ -1,5 +1,5 @@
 import { redirect } from "next/navigation";
-import { getCurrentCustomer } from "@/lib/auth/session";
+import { getCurrentCustomer, getCurrentVendor } from "@/lib/auth/session";
 import Link from "next/link";
 
 export default async function CustomerLayout({
@@ -7,11 +7,32 @@ export default async function CustomerLayout({
 }: {
   children: React.ReactNode;
 }) {
-  const customer = await getCurrentCustomer();
+  const [customer, vendor] = await Promise.all([
+    getCurrentCustomer(),
+    getCurrentVendor(),
+  ]);
   if (!customer) redirect("/login");
+
+  // A vendor browsing with a customer session cookie = impersonation mode
+  const isImpersonating = !!vendor;
 
   return (
     <div className="min-h-screen bg-gray-50">
+      {/* Impersonation banner */}
+      {isImpersonating && (
+        <div className="bg-amber-400 text-amber-950 text-sm font-medium flex items-center justify-between px-4 py-2">
+          <span>
+            👁 Viewing as <strong>{customer.name}</strong> ({customer.email})
+          </span>
+          <Link
+            href="/vendor/customers"
+            className="rounded bg-amber-950 text-amber-50 px-3 py-1 text-xs font-semibold hover:bg-amber-900 transition-colors"
+          >
+            ← Back to vendor view
+          </Link>
+        </div>
+      )}
+
       <header className="bg-white border-b">
         <div className="max-w-6xl mx-auto px-4 h-16 flex items-center justify-between">
           <div className="font-semibold text-lg">Customer Portal</div>

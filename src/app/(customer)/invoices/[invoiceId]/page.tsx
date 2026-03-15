@@ -8,11 +8,14 @@ import { LinkButton, AnchorButton } from "@/components/shared/link-button";
 
 export default async function InvoiceDetailPage({
   params,
+  searchParams,
 }: {
   params: Promise<{ invoiceId: string }>;
+  searchParams: Promise<{ paid?: string }>;
 }) {
   const customer = await requireCustomer();
   const { invoiceId } = await params;
+  const { paid } = await searchParams;
 
   const invoice = await prisma.invoice.findFirst({
     where: { id: invoiceId, customerId: customer.id },
@@ -25,6 +28,13 @@ export default async function InvoiceDetailPage({
 
   return (
     <div className="space-y-6 max-w-2xl">
+      {/* Payment success banner */}
+      {paid === "1" && (
+        <div className="rounded-md border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-800">
+          ✅ Payment received! Your invoice will be marked as paid once confirmed. This may take a moment.
+        </div>
+      )}
+
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold">
           Invoice {invoice.invoiceNumber ? `#${invoice.invoiceNumber}` : ""}
@@ -35,6 +45,8 @@ export default async function InvoiceDetailPage({
               ? "default"
               : invoice.status === "VOID"
               ? "outline"
+              : invoice.status === "PARTIAL"
+              ? "secondary"
               : "destructive"
           }
         >
@@ -125,6 +137,9 @@ export default async function InvoiceDetailPage({
             Download PDF
           </AnchorButton>
         )}
+        <LinkButton href="/invoices" variant="ghost">
+          ← All invoices
+        </LinkButton>
       </div>
 
       {invoice.payments.length > 0 && (
@@ -134,7 +149,7 @@ export default async function InvoiceDetailPage({
           </CardHeader>
           <CardContent className="space-y-2 text-sm">
             {invoice.payments.map((p) => (
-              <div key={p.id} className="flex justify-between">
+              <div key={p.id} className="flex justify-between items-center">
                 <span className="text-gray-600">
                   {new Date(p.createdAt).toLocaleDateString()}
                 </span>

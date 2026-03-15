@@ -54,6 +54,7 @@ enum SyncTrigger {
 enum SyncStatus {
   RUNNING
   COMPLETED
+  PARTIAL
   FAILED
 }
 
