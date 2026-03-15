@@ -6,7 +6,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { syncVendor } from "@/lib/sync/engine";
-import { scheduleNextSync } from "@/lib/sync/scheduler";
 import { SyncTrigger } from "@prisma/client";
 import { prisma } from "@/lib/db/client";
 
@@ -35,6 +34,7 @@ export async function POST(req: NextRequest) {
     if (trigger === SyncTrigger.SCHEDULED) {
       const config = await prisma.syncConfig.findUnique({ where: { vendorId } });
       if (config) {
+        const { scheduleNextSync } = await import("@/lib/sync/scheduler");
         await scheduleNextSync(vendorId, config.frequencyMinutes);
       }
     }

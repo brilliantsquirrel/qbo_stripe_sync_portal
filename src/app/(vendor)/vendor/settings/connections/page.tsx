@@ -53,9 +53,14 @@ export default function ConnectionsPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ secretKey: stripeKey, webhookSecret: stripeWebhookSecret }),
       });
+      let data: { error?: string; success?: boolean } = {};
+      try {
+        data = await res.json();
+      } catch {
+        // response body was empty or not JSON
+      }
       if (!res.ok) {
-        const d = await res.json();
-        throw new Error(d.error ?? "Failed to save Stripe connection");
+        throw new Error(data.error ?? `Server error ${res.status}`);
       }
       setStripeConnected(true);
       setStripeKey("");

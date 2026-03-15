@@ -20,10 +20,24 @@ interface SyncLog {
   errors: Array<{ entity: string; id: string; message: string }> | null;
 }
 
+interface SyncResult {
+  success: boolean;
+  recordsProcessed?: number;
+  errors?: Array<{ entity: string; id: string; message: string }>;
+  error?: string;
+}
+
+function statusVariant(status: string): "default" | "secondary" | "destructive" | "outline" {
+  if (status === "COMPLETED") return "default";
+  if (status === "PARTIAL") return "secondary";
+  if (status === "RUNNING") return "outline";
+  return "destructive";
+}
+
 export default function SyncPage() {
   const [logs, setLogs] = useState<SyncLog[]>([]);
   const [triggering, setTriggering] = useState(false);
-  const [lastTriggeredAt, setLastTriggeredAt] = useState<Date | null>(null);
+  const [lastResult, setLastResult] = useState<SyncResult | null>(null);
 
   useEffect(() => {
     fetchLogs();
@@ -41,10 +55,20 @@ export default function SyncPage() {
 
   async function triggerSync() {
     setTriggering(true);
+    setLastResult(null);
     try {
-      await fetch("/api/sync/trigger", { method: "POST" });
-      setLastTriggeredAt(new Date());
-      setTimeout(fetchLogs, 2000);
+      const res = await fetch("/api/sync/trigger", { method: "POST" });
+      let result: SyncResult = { success: false };
+      try {
+        result = await res.json();
+      } catch {
+        result = { success: false, error: `Server error ${res.status}` };
+      }
+      setLastResult(result);
+      // Refresh logs immediately — sync already completed inline in dev
+      await fetchLogs();
+    } catch (err) {
+      setLastResult({ success: false, error: err instanceof Error ? err.message : "Network error" });
     } finally {
       setTriggering(false);
     }
@@ -54,17 +78,51 @@ export default function SyncPage() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold">Sync Status</h1>
-        <div className="flex items-center gap-3">
-          {lastTriggeredAt && (
-            <span className="text-sm text-gray-500">
-              Triggered at {lastTriggeredAt.toLocaleTimeString()}
-            </span>
-          )}
-          <Button onClick={triggerSync} disabled={triggering}>
-            {triggering ? "Queuing…" : "Sync Now"}
-          </Button>
-        </div>
+        <Button onClick={triggerSync} disabled={triggering}>
+          {triggering ? "Syncing…" : "Sync Now"}
+        </Button>
       </div>
+
+      {/* Result banner */}
+      {lastResult && (
+        <div
+          className={`rounded-md border px-4 py-3 text-sm ${
+            lastResult.success
+              ? "border-green-200 bg-green-50 text-green-800"
+              : "border-red-200 bg-red-50 text-red-800"
+          }`}
+        >
+          {lastResult.success ? (
+            <>
+              ✅ Sync complete —{" "}
+              <strong>{lastResult.recordsProcessed ?? 0} records</strong> processed.
+              {lastResult.errors && lastResult.errors.length > 0 && (
+                <span className="ml-2 text-amber-700">
+                  ({lastResult.errors.length} warning{lastResult.errors.length !== 1 ? "s" : ""})
+                </span>
+              )}
+            </>
+          ) : (
+            <>❌ Sync failed: {lastResult.error ?? "Unknown error"}</>
+          )}
+        </div>
+      )}
+
+      {/* Warnings detail */}
+      {lastResult?.success && lastResult.errors && lastResult.errors.length > 0 && (
+        <Card className="border-amber-200 bg-amber-50">
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm text-amber-800">Sync Warnings</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <ul className="space-y-1 text-xs text-amber-700 font-mono">
+              {lastResult.errors.map((e, i) => (
+                <li key={i}>[{e.entity}:{e.id}] {e.message}</li>
+              ))}
+            </ul>
+          </CardContent>
+        </Card>
+      )}
 
       <Card>
         <CardHeader>
@@ -99,15 +157,7 @@ export default function SyncPage() {
                       <Badge variant="outline">{log.trigger}</Badge>
                     </td>
                     <td className="px-4 py-3">
-                      <Badge
-                        variant={
-                          log.status === "COMPLETED"
-                            ? "default"
-                            : log.status === "RUNNING"
-                            ? "secondary"
-                            : "destructive"
-                        }
-                      >
+                      <Badge variant={statusVariant(log.status)}>
                         {log.status}
                       </Badge>
                     </td>

@@ -97,15 +97,19 @@ export async function reportUsage(
     vendor.platformSubscriptionId
   );
 
-  // Report usage via Stripe Billing Meter (requires meter setup in Stripe dashboard)
-  // This uses Stripe's usage-based billing API
-  for (const item of subscription.items.data) {
-    if (item.price.recurring?.usage_type === "metered") {
-      await platformStripe.subscriptionItems.createUsageRecord(item.id, {
-        quantity: invoicesSynced,
-        timestamp: Math.floor(Date.now() / 1000),
-        action: "set",
-      });
-    }
+  // Report usage via Stripe Billing Meter Events API (SDK 17+).
+  // Requires a Meter named "invoices_synced" created in the Stripe dashboard.
+  const hasMetered = subscription.items.data.some(
+    (item) => item.price.recurring?.usage_type === "metered"
+  );
+
+  if (hasMetered) {
+    await platformStripe.billing.meterEvents.create({
+      event_name: "invoices_synced",
+      payload: {
+        stripe_customer_id: vendor.platformStripeCustomerId!,
+        value: String(invoicesSynced),
+      },
+    });
   }
 }
