@@ -5,16 +5,45 @@ import { sendMagicLinkEmail } from "@/lib/email/resend";
 const OTP_TTL_MINUTES = 15;
 
 /**
+ * Find a customer by email, checking both the primary email and the
+ * comma-separated allowedEmails list.
+ */
+async function findCustomerByEmail(email: string, vendorId: string) {
+  // Try primary email first (uses the unique index — fastest path)
+  const byPrimary = await prisma.customer.findUnique({
+    where: { vendorId_email: { vendorId, email } },
+  });
+  if (byPrimary) return byPrimary;
+
+  // Fall back to allowedEmails (comma-separated, case-insensitive search)
+  const candidates = await prisma.customer.findMany({
+    where: {
+      vendorId,
+      allowedEmails: { not: null },
+    },
+  });
+
+  const lower = email.toLowerCase();
+  return (
+    candidates.find((c) =>
+      c.allowedEmails
+        ?.split(",")
+        .map((e) => e.trim().toLowerCase())
+        .includes(lower)
+    ) ?? null
+  );
+}
+
+/**
  * Generate a 6-digit OTP for a customer, store its hash in DB, and send email.
+ * Resolves the customer by primary email OR any address in allowedEmails.
  * Idempotent: deletes any existing unused tokens for this customer first.
  */
 export async function sendMagicLink(
   email: string,
   vendorId: string
 ): Promise<{ success: boolean; error?: string }> {
-  const customer = await prisma.customer.findUnique({
-    where: { vendorId_email: { vendorId, email } },
-  });
+  const customer = await findCustomerByEmail(email, vendorId);
 
   if (!customer) {
     // Return success anyway to prevent email enumeration
@@ -41,6 +70,7 @@ export async function sendMagicLink(
 
 /**
  * Verify a submitted OTP. On success, creates a session and returns the token.
+ * Resolves the customer by primary email OR any address in allowedEmails.
  * Returns null if the OTP is invalid or expired.
  */
 export async function verifyOtp(
@@ -50,8 +80,12 @@ export async function verifyOtp(
 ): Promise<{ sessionToken: string; customerId: string } | null> {
   const tokenHash = sha256(otp);
 
-  const customer = await prisma.customer.findUnique({
-    where: { vendorId_email: { vendorId, email } },
+  const customer = await findCustomerByEmail(email, vendorId);
+  if (!customer) return null;
+
+  // Re-fetch with the token included
+  const customerWithToken = await prisma.customer.findUnique({
+    where: { id: customer.id },
     include: {
       magicTokens: {
         where: {
@@ -64,11 +98,11 @@ export async function verifyOtp(
     },
   });
 
-  if (!customer || customer.magicTokens.length === 0) {
+  if (!customerWithToken || customerWithToken.magicTokens.length === 0) {
     return null;
   }
 
-  const magicToken = customer.magicTokens[0];
+  const magicToken = customerWithToken.magicTokens[0];
 
   // Mark token as used and create session atomically
   const sessionToken = generateSessionToken();
@@ -114,6 +148,35 @@ export async function getCustomerFromSession(
     name: session.customer.name,
     vendorId: session.customer.vendorId,
   };
+}
+
+/**
+ * Send an OTP directly to a known customer by ID, to a specific email address.
+ * Used by the vendor magic-link route where the customer is already verified —
+ * avoids a redundant email→customer lookup.
+ */
+export async function sendMagicLinkById(
+  customerId: string,
+  toEmail: string
+): Promise<void> {
+  const customer = await prisma.customer.findUniqueOrThrow({
+    where: { id: customerId },
+  });
+
+  // Clean up old tokens
+  await prisma.magicToken.deleteMany({
+    where: { customerId, usedAt: null },
+  });
+
+  const otp = generateOtp(6);
+  const tokenHash = sha256(otp);
+  const expiresAt = new Date(Date.now() + OTP_TTL_MINUTES * 60 * 1000);
+
+  await prisma.magicToken.create({
+    data: { customerId, tokenHash, expiresAt },
+  });
+
+  await sendMagicLinkEmail({ to: toEmail, otp, customerName: customer.name });
 }
 
 /**

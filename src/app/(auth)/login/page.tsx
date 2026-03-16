@@ -11,12 +11,23 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 
-export default function LoginPage() {
+function LoginForm() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const vendorId = searchParams.get("v") ?? "";
+
+  // Prefer ?v= param; fall back to the cookie set by middleware
+  const vendorIdFromParam = searchParams.get("v") ?? "";
+  const vendorIdFromCookie =
+    typeof document !== "undefined"
+      ? document.cookie
+          .split("; ")
+          .find((c) => c.startsWith("qss_vendor_id="))
+          ?.split("=")[1] ?? ""
+      : "";
+  const vendorId = vendorIdFromParam || vendorIdFromCookie;
 
   const [email, setEmail] = useState("");
   const [step, setStep] = useState<"email" | "otp">("email");
@@ -132,5 +143,13 @@ export default function LoginPage() {
         </CardContent>
       </Card>
     </div>
+  );
+}
+
+export default function LoginPage() {
+  return (
+    <Suspense>
+      <LoginForm />
+    </Suspense>
   );
 }

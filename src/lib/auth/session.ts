@@ -2,6 +2,7 @@ import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { getCustomerFromSession } from "@/lib/auth/magic-link";
 import { auth } from "@/lib/auth/config";
+import { VENDOR_ID_COOKIE } from "@/middleware";
 
 export const CUSTOMER_SESSION_COOKIE = "qss_customer_session";
 
@@ -32,11 +33,16 @@ export async function getCurrentVendor() {
 
 /**
  * Require a customer session — call in Server Components/Actions.
- * Redirects to /login if not authenticated.
+ * Redirects to /login?v=<vendorId> if not authenticated, preserving the
+ * vendor context so the login page can scope the OTP correctly.
  */
 export async function requireCustomer() {
   const customer = await getCurrentCustomer();
-  if (!customer) redirect("/login");
+  if (!customer) {
+    const cookieStore = await cookies();
+    const vendorId = cookieStore.get(VENDOR_ID_COOKIE)?.value;
+    redirect(vendorId ? `/login?v=${vendorId}` : "/login");
+  }
   return customer;
 }
 
