@@ -133,6 +133,7 @@ model Customer {
   vendorId         String
   vendor           Vendor            @relation(fields: [vendorId], references: [id], onDelete: Cascade)
   email            String
+  allowedEmails    String?           // comma-separated extra emails that may log in as this customer
   name             String
   phone            String?
   // External IDs

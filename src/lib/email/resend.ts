@@ -15,7 +15,16 @@ export async function sendMagicLinkEmail({
   otp,
   customerName,
 }: MagicLinkEmailParams): Promise<void> {
-  await resend.emails.send({
+  // In development without a Resend key, log the OTP to the console instead
+  // of failing. Remove this branch before going to production.
+  if (!process.env.RESEND_API_KEY) {
+    console.log(
+      `\n🔑 [DEV] Magic link OTP for ${customerName} <${to}>: ${otp}\n`
+    );
+    return;
+  }
+
+  const { error } = await resend.emails.send({
     from: FROM,
     to,
     subject: `Your login code for ${APP_NAME}`,
@@ -34,6 +43,10 @@ export async function sendMagicLinkEmail({
       </div>
     `,
   });
+
+  if (error) {
+    throw new Error(`Resend error: ${error.message}`);
+  }
 }
 
 interface PaymentConfirmationEmailParams {
@@ -49,7 +62,7 @@ export async function sendPaymentConfirmationEmail({
   invoiceNumber,
   amountFormatted,
 }: PaymentConfirmationEmailParams): Promise<void> {
-  await resend.emails.send({
+  const { error } = await resend.emails.send({
     from: FROM,
     to,
     subject: `Payment received — Invoice ${invoiceNumber}`,
@@ -63,6 +76,7 @@ export async function sendPaymentConfirmationEmail({
       </div>
     `,
   });
+  if (error) throw new Error(`Resend error: ${error.message}`);
 }
 
 interface AutoPayNotificationParams {
@@ -78,7 +92,7 @@ export async function sendAutoPayNotificationEmail({
   invoiceNumber,
   amountFormatted,
 }: AutoPayNotificationParams): Promise<void> {
-  await resend.emails.send({
+  const { error } = await resend.emails.send({
     from: FROM,
     to,
     subject: `Auto-pay scheduled — Invoice ${invoiceNumber}`,
@@ -92,4 +106,5 @@ export async function sendAutoPayNotificationEmail({
       </div>
     `,
   });
+  if (error) throw new Error(`Resend error: ${error.message}`);
 }

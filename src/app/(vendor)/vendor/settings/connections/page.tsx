@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, Suspense } from "react";
 import {
   Card,
   CardContent,
@@ -14,7 +14,7 @@ import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { useSearchParams } from "next/navigation";
 
-export default function ConnectionsPage() {
+function ConnectionsPageInner() {
   const searchParams = useSearchParams();
   const successMsg = searchParams.get("success");
   const errorMsg = searchParams.get("error");
@@ -158,5 +158,13 @@ export default function ConnectionsPage() {
         </CardContent>
       </Card>
     </div>
+  );
+}
+
+export default function ConnectionsPage() {
+  return (
+    <Suspense>
+      <ConnectionsPageInner />
+    </Suspense>
   );
 }
