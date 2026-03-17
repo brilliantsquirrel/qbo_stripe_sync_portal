@@ -49,6 +49,11 @@ COPY --from=builder /app/public ./public
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
 
+# @google-cloud/tasks proto JSON is not traced by the standalone bundler — copy explicitly
+COPY --from=builder --chown=nextjs:nodejs \
+  /app/node_modules/@google-cloud/tasks/build/protos \
+  ./node_modules/@google-cloud/tasks/build/protos
+
 USER nextjs
 
 EXPOSE 3000
