@@ -69,11 +69,12 @@ jobs:
           gcloud run jobs create migrate-${{ github.sha }} \
             --image ${{ env.IMAGE_NAME }}:${{ github.sha }} \
             --region ${{ env.GCP_REGION }} \
-            --command="npx" \
-            --args="prisma,migrate,deploy" \
+            --command="node" \
+            --args="node_modules/prisma/build/index.js,migrate,deploy" \
             --set-secrets="DATABASE_URL=DATABASE_URL:latest" \
             --set-cloudsql-instances=${{ secrets.CLOUD_SQL_INSTANCE_CONNECTION_NAME }} \
             --service-account="qbo-sync-portal-sa@qbo-stripe-sync-portal.iam.gserviceaccount.com" \
+            --memory=512Mi \
             --max-retries=1 \
             --task-timeout=300 || true
           gcloud run jobs execute migrate-${{ github.sha }} \
