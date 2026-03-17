@@ -29,6 +29,9 @@ RUN apk add --no-cache libc6-compat
 
 COPY --from=deps /app/node_modules ./node_modules
 COPY prisma ./prisma
+COPY prisma.config.ts .
+COPY tsconfig.json .
+COPY package.json .
 
 CMD ["node", "node_modules/prisma/build/index.js", "migrate", "deploy"]
 
