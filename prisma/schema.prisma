@@ -79,6 +79,9 @@ model Vendor {
   brandButtonBg            String?  // Primary button background hex
   brandButtonText          String?  // Primary button text hex
   brandFontFamily          String?  // CSS font-family string
+  siteName                 String?  // Vendor admin header title / browser tab name
+  logoUrl                  String?  // URL to vendor logo (shown in admin header and customer portal)
+  faviconUrl               String?  // URL to favicon (data: URI or hosted URL)
   // Relations
   qboConnection            QboConnection?
   stripeConnection         StripeConnection?
