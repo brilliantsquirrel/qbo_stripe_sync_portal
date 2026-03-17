@@ -3,7 +3,7 @@
  * Uses platformStripe (our Stripe account), NOT the vendor's own Stripe.
  */
 
-import { platformStripe } from "@/lib/stripe/client";
+import { getPlatformStripe } from "@/lib/stripe/client";
 import { prisma } from "@/lib/db/client";
 import { Tier } from "@prisma/client";
 
@@ -27,7 +27,7 @@ export async function getOrCreatePlatformCustomer(
     return vendor.platformStripeCustomerId;
   }
 
-  const customer = await platformStripe.customers.create({
+  const customer = await getPlatformStripe().customers.create({
     email: vendor.email,
     name: vendor.name,
     metadata: { vendorId },
@@ -52,7 +52,7 @@ export async function createSubscriptionCheckoutSession(
   const customerId = await getOrCreatePlatformCustomer(vendorId);
   const priceId = TIER_PRICE_IDS[tier];
 
-  const session = await platformStripe.checkout.sessions.create({
+  const session = await getPlatformStripe().checkout.sessions.create({
     customer: customerId,
     mode: "subscription",
     line_items: [{ price: priceId, quantity: 1 }],
@@ -73,7 +73,7 @@ export async function createBillingPortalSession(
 ): Promise<string> {
   const customerId = await getOrCreatePlatformCustomer(vendorId);
 
-  const session = await platformStripe.billingPortal.sessions.create({
+  const session = await getPlatformStripe().billingPortal.sessions.create({
     customer: customerId,
     return_url: returnUrl,
   });
@@ -93,7 +93,7 @@ export async function reportUsage(
   if (!vendor.platformSubscriptionId) return;
 
   // Retrieve subscription to get the meter item
-  const subscription = await platformStripe.subscriptions.retrieve(
+  const subscription = await getPlatformStripe().subscriptions.retrieve(
     vendor.platformSubscriptionId
   );
 
@@ -104,7 +104,7 @@ export async function reportUsage(
   );
 
   if (hasMetered) {
-    await platformStripe.billing.meterEvents.create({
+    await getPlatformStripe().billing.meterEvents.create({
       event_name: "invoices_synced",
       payload: {
         stripe_customer_id: vendor.platformStripeCustomerId!,
