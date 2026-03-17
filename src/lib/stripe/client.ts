@@ -14,10 +14,9 @@ export function getPlatformStripe(): Stripe {
   return _platformStripe;
 }
 
-
 /**
- * Get a Stripe client scoped to a vendor's own Stripe account.
- * Uses the vendor's decrypted secret key.
+ * Get a Stripe client scoped to a vendor's connected Stripe account.
+ * Uses the vendor's decrypted OAuth access token.
  */
 export async function getVendorStripe(vendorId: string): Promise<Stripe> {
   const connection = await prisma.stripeConnection.findUnique({
@@ -28,37 +27,17 @@ export async function getVendorStripe(vendorId: string): Promise<Stripe> {
     throw new Error(`No Stripe connection found for vendor ${vendorId}`);
   }
 
-  const secretKey = decrypt(connection.secretKey);
+  const accessToken = decrypt(connection.accessToken);
 
-  return new Stripe(secretKey, {
+  return new Stripe(accessToken, {
     apiVersion: "2026-02-25.clover",
     typescript: true,
   });
 }
 
 /**
- * Verify a Stripe webhook signature using the vendor's webhook secret.
- */
-export async function constructVendorWebhookEvent(
-  body: string,
-  signature: string,
-  vendorId: string
-): Promise<Stripe.Event> {
-  const connection = await prisma.stripeConnection.findUnique({
-    where: { vendorId },
-  });
-
-  if (!connection) {
-    throw new Error(`No Stripe connection found for vendor ${vendorId}`);
-  }
-
-  const webhookSecret = decrypt(connection.webhookSecret);
-  const stripe = await getVendorStripe(vendorId);
-  return stripe.webhooks.constructEvent(body, signature, webhookSecret);
-}
-
-/**
- * Verify a platform-level Stripe webhook (for vendor subscription events).
+ * Verify a platform-level Stripe webhook (for vendor subscription events and
+ * Connect events — both use the platform webhook signing secret).
  */
 export function constructPlatformWebhookEvent(
   body: string,

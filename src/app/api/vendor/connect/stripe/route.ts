@@ -1,73 +1,59 @@
-import { NextRequest, NextResponse } from "next/server";
-import { z } from "zod";
+import { NextResponse } from "next/server";
 import { requireVendor } from "@/lib/auth/session";
 import { prisma } from "@/lib/db/client";
-import { encrypt } from "@/lib/utils/crypto";
-import Stripe from "stripe";
+import { getPlatformStripe } from "@/lib/stripe/client";
 
-const schema = z.object({
-  secretKey: z.string().startsWith("sk_"),
-  webhookSecret: z.string().startsWith("whsec_"),
-});
+const STRIPE_CLIENT_ID = process.env.STRIPE_CLIENT_ID!;
+const APP_URL = process.env.NEXT_PUBLIC_APP_URL!;
+const REDIRECT_URI = `${APP_URL}/api/vendor/connect/stripe/callback`;
 
-export async function POST(req: NextRequest) {
-  try {
-    const vendor = await requireVendor();
-    const body = await req.json();
-    const parsed = schema.safeParse(body);
-    if (!parsed.success) {
-      return NextResponse.json(
-        { error: parsed.error.issues[0]?.message ?? "Invalid input" },
-        { status: 400 }
-      );
-    }
-    const { secretKey, webhookSecret } = parsed.data;
+/**
+ * GET — redirect vendor to Stripe Connect OAuth authorization page.
+ */
+export async function GET() {
+  const vendor = await requireVendor();
 
-    // Validate the key using balance (works with any restricted key)
-    const stripe = new Stripe(secretKey, { apiVersion: "2026-02-25.clover" });
-    let accountId: string;
-    try {
-      // balance.retrieve works with restricted keys; grab account id from a separate call
-      await stripe.balance.retrieve();
-      // Try to get the account id — may fail if key is restricted; fall back to a placeholder
-      try {
-        const account = await stripe.accounts.retrieve();
-        accountId = account.id;
-      } catch {
-        // Restricted key: derive a stable placeholder from the key prefix
-        accountId = `acct_restricted_${secretKey.slice(-8)}`;
-      }
-    } catch (stripeErr: unknown) {
-      const msg =
-        stripeErr instanceof Stripe.errors.StripeError
-          ? stripeErr.message
-          : "Invalid Stripe secret key";
-      return NextResponse.json({ error: msg }, { status: 400 });
-    }
+  // Encode vendorId as state for CSRF verification in the callback
+  const state = Buffer.from(vendor.id).toString("base64url");
 
-    // Derive publishable key from secret key  (sk_live_xxx → pk_live_xxx)
-    const publishableKey = secretKey.replace(/^sk_/, "pk_");
+  const params = new URLSearchParams({
+    response_type: "code",
+    client_id: STRIPE_CLIENT_ID,
+    scope: "read_write",
+    redirect_uri: REDIRECT_URI,
+    state,
+  });
 
-    await prisma.stripeConnection.upsert({
-      where: { vendorId: vendor.id },
-      update: {
-        secretKey: encrypt(secretKey),
-        publishableKey,
-        webhookSecret: encrypt(webhookSecret),
-      },
-      create: {
-        vendorId: vendor.id,
-        stripeAccountId: accountId,
-        secretKey: encrypt(secretKey),
-        publishableKey,
-        webhookSecret: encrypt(webhookSecret),
-      },
-    });
+  return NextResponse.redirect(
+    `https://connect.stripe.com/oauth/authorize?${params}`
+  );
+}
 
-    return NextResponse.json({ success: true, accountId });
-  } catch (err: unknown) {
-    console.error("[stripe-connect] unexpected error:", err);
-    const message = err instanceof Error ? err.message : "Internal server error";
-    return NextResponse.json({ error: message }, { status: 500 });
+/**
+ * DELETE — deauthorize the vendor's connected Stripe account and remove the record.
+ */
+export async function DELETE() {
+  const vendor = await requireVendor();
+
+  const connection = await prisma.stripeConnection.findUnique({
+    where: { vendorId: vendor.id },
+  });
+
+  if (!connection) {
+    return NextResponse.json({ error: "No Stripe connection found" }, { status: 404 });
   }
+
+  try {
+    await getPlatformStripe().oauth.deauthorize({
+      client_id: STRIPE_CLIENT_ID,
+      stripe_user_id: connection.stripeAccountId,
+    });
+  } catch (err) {
+    // Log but don't block — connection may already be deauthorized on Stripe's side
+    console.warn("[stripe-disconnect] deauthorize failed:", err);
+  }
+
+  await prisma.stripeConnection.delete({ where: { vendorId: vendor.id } });
+
+  return NextResponse.json({ success: true });
 }

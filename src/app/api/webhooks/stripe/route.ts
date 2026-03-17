@@ -26,12 +26,26 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: `Webhook error: ${err}` }, { status: 400 });
   }
 
+  // Connect events have event.account set to the connected Stripe account ID.
+  // Look up the vendor so payment events can be attributed correctly.
+  const connectedAccountId = (event as Stripe.Event & { account?: string }).account;
+
   try {
     switch (event.type) {
       // ── Payment events (vendor's customer pays an invoice) ────────────────
+      // These arrive as Connect events (event.account = vendor's Stripe acct).
       case "payment_intent.succeeded": {
         const intent = event.data.object as Stripe.PaymentIntent;
-        const { invoiceId, vendorId, customerId } = intent.metadata;
+        // Prefer vendorId from metadata; fall back to looking up by Stripe account.
+        let { invoiceId, vendorId, customerId } = intent.metadata;
+
+        if (!vendorId && connectedAccountId) {
+          const connection = await prisma.stripeConnection.findFirst({
+            where: { stripeAccountId: connectedAccountId },
+            select: { vendorId: true },
+          });
+          vendorId = connection?.vendorId ?? "";
+        }
         if (!invoiceId || !vendorId) break;
 
         await prisma.$transaction(async (tx) => {
