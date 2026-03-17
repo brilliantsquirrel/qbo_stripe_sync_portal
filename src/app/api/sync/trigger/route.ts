@@ -3,7 +3,7 @@ import { requireVendor } from "@/lib/auth/session";
 import { syncVendor } from "@/lib/sync/engine";
 import { SyncTrigger } from "@prisma/client";
 
-export async function POST(req: NextRequest) {
+export async function POST(_req: NextRequest) {
   const vendor = await requireVendor();
 
   try {

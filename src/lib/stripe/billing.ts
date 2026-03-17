@@ -87,7 +87,7 @@ export async function createBillingPortalSession(
 export async function reportUsage(
   vendorId: string,
   invoicesSynced: number,
-  revenueProcessed: number
+  _revenueProcessed: number
 ): Promise<void> {
   const vendor = await prisma.vendor.findUniqueOrThrow({ where: { id: vendorId } });
   if (!vendor.platformSubscriptionId) return;

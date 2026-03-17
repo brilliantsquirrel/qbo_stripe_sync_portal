@@ -111,7 +111,7 @@ export default function BrandingPage() {
                 onChange={(e) => set("portalTitle", e.target.value)}
               />
               <p className="text-xs text-gray-500 mt-1">
-                Shown in the header. Defaults to "Customer Portal" if left blank.
+                {'Shown in the header. Defaults to "Customer Portal" if left blank.'}
               </p>
             </div>
             <div>
