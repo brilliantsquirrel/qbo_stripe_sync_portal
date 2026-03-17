@@ -4,11 +4,13 @@ import { useState, useEffect } from "react";
 import {
   Card,
   CardContent,
+  CardDescription,
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Label } from "@/components/ui/label";
 
 interface SyncLog {
   id: string;
@@ -27,6 +29,22 @@ interface SyncResult {
   error?: string;
 }
 
+interface SyncConfig {
+  frequencyHours: number;
+  lastSyncAt: string | null;
+  nextSyncAt: string | null;
+}
+
+const FREQUENCY_OPTIONS = [
+  { label: "Every hour", value: 1 },
+  { label: "Every 2 hours", value: 2 },
+  { label: "Every 4 hours", value: 4 },
+  { label: "Every 6 hours", value: 6 },
+  { label: "Every 12 hours", value: 12 },
+  { label: "Every 24 hours", value: 24 },
+  { label: "Every 48 hours", value: 48 },
+];
+
 function statusVariant(status: string): "default" | "secondary" | "destructive" | "outline" {
   if (status === "COMPLETED") return "default";
   if (status === "PARTIAL") return "secondary";
@@ -41,11 +59,43 @@ export default function SyncPage() {
   const [clearingInvoices, setClearingInvoices] = useState(false);
   const [clearResult, setClearResult] = useState<{ deleted: number; voided: number } | null>(null);
 
+  const [syncConfig, setSyncConfig] = useState<SyncConfig>({ frequencyHours: 1, lastSyncAt: null, nextSyncAt: null });
+  const [savingConfig, setSavingConfig] = useState(false);
+  const [configSaved, setConfigSaved] = useState(false);
+
   useEffect(() => {
     fetchLogs();
+    fetchConfig();
     const interval = setInterval(fetchLogs, 10000);
     return () => clearInterval(interval);
   }, []);
+
+  async function fetchConfig() {
+    const res = await fetch("/api/vendor/sync-config");
+    if (res.ok) {
+      const data = await res.json();
+      setSyncConfig(data);
+    }
+  }
+
+  async function saveConfig() {
+    setSavingConfig(true);
+    setConfigSaved(false);
+    try {
+      const res = await fetch("/api/vendor/sync-config", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ frequencyHours: syncConfig.frequencyHours }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setSyncConfig(data);
+        setConfigSaved(true);
+      }
+    } finally {
+      setSavingConfig(false);
+    }
+  }
 
   async function fetchLogs() {
     const res = await fetch("/api/vendor/sync-logs");
@@ -80,7 +130,6 @@ export default function SyncPage() {
         result = { success: false, error: `Server error ${res.status}` };
       }
       setLastResult(result);
-      // Refresh logs immediately — sync already completed inline in dev
       await fetchLogs();
     } catch (err) {
       setLastResult({ success: false, error: err instanceof Error ? err.message : "Network error" });
@@ -149,6 +198,46 @@ export default function SyncPage() {
           </CardContent>
         </Card>
       )}
+
+      {/* Automatic sync settings */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Automatic Sync</CardTitle>
+          <CardDescription>Configure how often syncs run automatically.</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="flex items-end gap-4">
+            <div className="flex-1 max-w-xs">
+              <Label htmlFor="frequencyHours">Sync frequency</Label>
+              <select
+                id="frequencyHours"
+                value={syncConfig.frequencyHours}
+                onChange={(e) => {
+                  setSyncConfig((c) => ({ ...c, frequencyHours: Number(e.target.value) }));
+                  setConfigSaved(false);
+                }}
+                className="mt-1 flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-xs transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              >
+                {FREQUENCY_OPTIONS.map((o) => (
+                  <option key={o.value} value={o.value}>{o.label}</option>
+                ))}
+              </select>
+            </div>
+            <Button onClick={saveConfig} disabled={savingConfig}>
+              {savingConfig ? "Saving…" : "Save"}
+            </Button>
+          </div>
+          {configSaved && <p className="text-sm text-green-600">Sync frequency saved.</p>}
+          <div className="text-sm text-gray-500 space-y-1">
+            {syncConfig.lastSyncAt && (
+              <p>Last sync: {new Date(syncConfig.lastSyncAt).toLocaleString()}</p>
+            )}
+            {syncConfig.nextSyncAt && (
+              <p>Next sync: {new Date(syncConfig.nextSyncAt).toLocaleString()}</p>
+            )}
+          </div>
+        </CardContent>
+      </Card>
 
       <Card>
         <CardHeader>
