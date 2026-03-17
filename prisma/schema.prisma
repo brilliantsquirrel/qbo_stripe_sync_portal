@@ -71,6 +71,14 @@ model Vendor {
   platformSubscriptionId   String?
   subscriptionTier         Tier               @default(STARTER)
   subscriptionStatus       SubscriptionStatus @default(TRIALING)
+  // Customer portal branding
+  portalTitle              String?  // Portal header title (defaults to vendor name)
+  brandBgColor             String?  // Page background hex (e.g. "#f9fafb")
+  brandTextColor           String?  // Body text hex
+  brandLinkColor           String?  // Link color hex
+  brandButtonBg            String?  // Primary button background hex
+  brandButtonText          String?  // Primary button text hex
+  brandFontFamily          String?  // CSS font-family string
   // Relations
   qboConnection            QboConnection?
   stripeConnection         StripeConnection?
