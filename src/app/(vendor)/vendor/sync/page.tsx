@@ -38,6 +38,8 @@ export default function SyncPage() {
   const [logs, setLogs] = useState<SyncLog[]>([]);
   const [triggering, setTriggering] = useState(false);
   const [lastResult, setLastResult] = useState<SyncResult | null>(null);
+  const [clearingInvoices, setClearingInvoices] = useState(false);
+  const [clearResult, setClearResult] = useState<{ deleted: number; voided: number } | null>(null);
 
   useEffect(() => {
     fetchLogs();
@@ -50,6 +52,19 @@ export default function SyncPage() {
     if (res.ok) {
       const data = await res.json();
       setLogs(data.logs);
+    }
+  }
+
+  async function clearStripeInvoices() {
+    if (!confirm("This will delete all draft invoices and void all open invoices in Stripe. Continue?")) return;
+    setClearingInvoices(true);
+    setClearResult(null);
+    try {
+      const res = await fetch("/api/vendor/stripe-invoices", { method: "DELETE" });
+      const data = await res.json();
+      if (res.ok) setClearResult(data);
+    } finally {
+      setClearingInvoices(false);
     }
   }
 
@@ -78,10 +93,21 @@ export default function SyncPage() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold">Sync Status</h1>
-        <Button onClick={triggerSync} disabled={triggering}>
-          {triggering ? "Syncing…" : "Sync Now"}
-        </Button>
+        <div className="flex gap-3">
+          <Button variant="destructive" onClick={clearStripeInvoices} disabled={clearingInvoices}>
+            {clearingInvoices ? "Clearing…" : "Delete Unpaid Stripe Invoices"}
+          </Button>
+          <Button onClick={triggerSync} disabled={triggering}>
+            {triggering ? "Syncing…" : "Sync Now"}
+          </Button>
+        </div>
       </div>
+
+      {clearResult && (
+        <div className="rounded-md border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-800">
+          Cleared Stripe invoices — <strong>{clearResult.deleted} deleted</strong>, <strong>{clearResult.voided} voided</strong>.
+        </div>
+      )}
 
       {/* Result banner */}
       {lastResult && (
