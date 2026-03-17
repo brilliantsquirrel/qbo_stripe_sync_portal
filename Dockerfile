@@ -21,6 +21,17 @@ RUN npx prisma generate
 ENV NEXT_TELEMETRY_DISABLED=1
 RUN npm run build
 
+# ── Migrator (used by Cloud Run migration jobs) ────────────────────────────────
+FROM base AS migrator
+WORKDIR /app
+
+RUN apk add --no-cache libc6-compat
+
+COPY --from=deps /app/node_modules ./node_modules
+COPY prisma ./prisma
+
+CMD ["node", "node_modules/prisma/build/index.js", "migrate", "deploy"]
+
 # ── Runner ────────────────────────────────────────────────────────────────────
 FROM base AS runner
 WORKDIR /app
@@ -34,12 +45,6 @@ RUN adduser --system --uid 1001 nextjs
 COPY --from=builder /app/public ./public
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
-
-# Copy Prisma CLI + schema so migration jobs work without downloading at runtime
-COPY --from=builder --chown=nextjs:nodejs /app/node_modules/.bin/prisma ./node_modules/.bin/prisma
-COPY --from=builder --chown=nextjs:nodejs /app/node_modules/prisma ./node_modules/prisma
-COPY --from=builder --chown=nextjs:nodejs /app/node_modules/@prisma ./node_modules/@prisma
-COPY --from=builder --chown=nextjs:nodejs /app/prisma ./prisma
 
 USER nextjs
 

@@ -9,6 +9,7 @@ env:
   GCP_REGION: us-central1
   ARTIFACT_REGISTRY: us-central1-docker.pkg.dev
   IMAGE_NAME: us-central1-docker.pkg.dev/qbo-stripe-sync-portal/qbo-sync-portal/app
+  MIGRATOR_IMAGE: us-central1-docker.pkg.dev/qbo-stripe-sync-portal/qbo-sync-portal/migrator
   CLOUD_RUN_SERVICE: qbo-sync-portal
 
 jobs:
@@ -35,17 +36,25 @@ jobs:
       - name: Configure Docker for Artifact Registry
         run: gcloud auth configure-docker ${{ env.ARTIFACT_REGISTRY }} --quiet
 
-      - name: Build Docker image
+      - name: Build Docker images
         run: |
           docker build \
+            --target runner \
             --tag ${{ env.IMAGE_NAME }}:${{ github.sha }} \
             --tag ${{ env.IMAGE_NAME }}:latest \
             .
+          docker build \
+            --target migrator \
+            --tag ${{ env.MIGRATOR_IMAGE }}:${{ github.sha }} \
+            --tag ${{ env.MIGRATOR_IMAGE }}:latest \
+            .
 
-      - name: Push Docker image
+      - name: Push Docker images
         run: |
           docker push ${{ env.IMAGE_NAME }}:${{ github.sha }}
           docker push ${{ env.IMAGE_NAME }}:latest
+          docker push ${{ env.MIGRATOR_IMAGE }}:${{ github.sha }}
+          docker push ${{ env.MIGRATOR_IMAGE }}:latest
 
       - name: Deploy to Cloud Run
         run: |
@@ -67,10 +76,8 @@ jobs:
       - name: Run database migrations
         run: |
           gcloud run jobs create migrate-${{ github.sha }} \
-            --image ${{ env.IMAGE_NAME }}:${{ github.sha }} \
+            --image ${{ env.MIGRATOR_IMAGE }}:${{ github.sha }} \
             --region ${{ env.GCP_REGION }} \
-            --command="node" \
-            --args="node_modules/prisma/build/index.js,migrate,deploy" \
             --set-secrets="DATABASE_URL=DATABASE_URL:latest" \
             --set-cloudsql-instances=${{ secrets.CLOUD_SQL_INSTANCE_CONNECTION_NAME }} \
             --service-account="qbo-sync-portal-sa@qbo-stripe-sync-portal.iam.gserviceaccount.com" \
