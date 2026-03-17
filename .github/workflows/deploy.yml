@@ -72,7 +72,8 @@ jobs:
             --command="npx" \
             --args="prisma,migrate,deploy" \
             --set-secrets="DATABASE_URL=DATABASE_URL:latest" \
-            --add-cloudsql-instances=${{ secrets.CLOUD_SQL_INSTANCE_CONNECTION_NAME }} \
+            --set-cloudsql-instances=${{ secrets.CLOUD_SQL_INSTANCE_CONNECTION_NAME }} \
+            --service-account="qbo-sync-portal-sa@qbo-stripe-sync-portal.iam.gserviceaccount.com" \
             --max-retries=1 \
             --task-timeout=300 || true
           gcloud run jobs execute migrate-${{ github.sha }} \
