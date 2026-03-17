@@ -1,6 +1,12 @@
 import { Resend } from "resend";
 
-const resend = new Resend(process.env.RESEND_API_KEY);
+// Lazy singleton — instantiated at call time so the build succeeds without env vars
+let _resend: Resend | null = null;
+function getResend(): Resend {
+  if (!_resend) _resend = new Resend(process.env.RESEND_API_KEY);
+  return _resend;
+}
+
 const FROM = process.env.EMAIL_FROM ?? "noreply@example.com";
 const APP_NAME = "QBO Stripe Sync Portal";
 
@@ -24,7 +30,7 @@ export async function sendMagicLinkEmail({
     return;
   }
 
-  const { error } = await resend.emails.send({
+  const { error } = await getResend().emails.send({
     from: FROM,
     to,
     subject: `Your login code for ${APP_NAME}`,
@@ -62,7 +68,7 @@ export async function sendPaymentConfirmationEmail({
   invoiceNumber,
   amountFormatted,
 }: PaymentConfirmationEmailParams): Promise<void> {
-  const { error } = await resend.emails.send({
+  const { error } = await getResend().emails.send({
     from: FROM,
     to,
     subject: `Payment received — Invoice ${invoiceNumber}`,
@@ -92,7 +98,7 @@ export async function sendAutoPayNotificationEmail({
   invoiceNumber,
   amountFormatted,
 }: AutoPayNotificationParams): Promise<void> {
-  const { error } = await resend.emails.send({
+  const { error } = await getResend().emails.send({
     from: FROM,
     to,
     subject: `Auto-pay scheduled — Invoice ${invoiceNumber}`,
