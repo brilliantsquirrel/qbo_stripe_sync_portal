@@ -86,6 +86,7 @@ model Vendor {
   qboConnection            QboConnection?
   stripeConnection         StripeConnection?
   customers                Customer[]
+  products                 Product[]
   invoices                 Invoice[]
   creditMemos              CreditMemo[]
   payments                 Payment[]
@@ -279,6 +280,27 @@ model CreditMemo {
   updatedAt       DateTime  @updatedAt
 
   @@unique([vendorId, qboCreditMemoId])
+}
+
+// ─── Products / services (synced from QBO Items → Stripe Products+Prices) ────
+
+model Product {
+  id              String    @id @default(cuid())
+  vendorId        String
+  vendor          Vendor    @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  qboItemId       String?   // QBO Item.Id
+  stripeProductId String?   // Stripe Product ID (prod_xxx)
+  stripePriceId   String?   // Active Stripe Price ID (price_xxx)
+  name            String
+  description     String?
+  unitPrice       Int       @default(0) // cents; 0 for variable-price items
+  active          Boolean   @default(true)
+  qboUpdatedAt    DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@unique([vendorId, qboItemId])
+  @@unique([vendorId, stripeProductId])
 }
 
 // ─── Sync audit log ───────────────────────────────────────────────────────────

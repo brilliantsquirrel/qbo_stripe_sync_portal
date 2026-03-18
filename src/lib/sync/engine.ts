@@ -1,14 +1,15 @@
 /**
  * Core bidirectional sync engine.
- * Orchestrates fetching from QBO and Stripe, resolving conflicts,
- * and writing canonical records to the DB.
  *
  * Flow per sync:
  *  1.   Pull QBO customers  → DB
  *  1.5  Push new DB customers (no stripeId) → Stripe
- *  2.   Pull QBO invoices   → DB
- *       Pull Stripe invoices → DB
+ *  1.7  Pull QBO items → DB (Products)
+ *  1.8  Push new/updated Products → Stripe (Products + Prices)
+ *  2.   Pull QBO invoices + Stripe invoices → DB
  *  2.5  Push new unpaid DB invoices (no stripeId) → Stripe (finalized, payable)
+ *  2.6  Stripe-paid invoices → record Payment in DB + create QBO payment
+ *  2.7  QBO-paid invoices with open Stripe invoice → paid_out_of_band + record Payment
  *  3.   Pull QBO credit memos → DB
  *  4.   Update usage record
  *  5.   Update sync config timestamp
@@ -17,9 +18,10 @@
 
 import { prisma } from "@/lib/db/client";
 import { SyncTrigger, SyncStatus } from "@prisma/client";
-import { fetchQboInvoices } from "@/lib/qbo/invoices";
+import { fetchQboInvoices, createQboPayment } from "@/lib/qbo/invoices";
 import { fetchQboCustomers } from "@/lib/qbo/customers";
 import { fetchQboCreditMemos } from "@/lib/qbo/credit-memos";
+import { fetchQboItems } from "@/lib/qbo/items";
 import { getVendorStripe } from "@/lib/stripe/client";
 import { resolveConflict } from "@/lib/sync/resolver";
 import {
@@ -36,15 +38,10 @@ interface SyncResult {
   errors: Array<{ entity: string; id: string; message: string }>;
 }
 
-/**
- * Run a full bidirectional sync for a vendor.
- * Called by Cloud Tasks (/api/sync/run) or manual trigger (/api/sync/trigger).
- */
 export async function syncVendor(
   vendorId: string,
   trigger: SyncTrigger
 ): Promise<SyncResult> {
-  // Create sync log entry
   const syncLog = await prisma.syncLog.create({
     data: { vendorId, trigger, status: SyncStatus.RUNNING },
   });
@@ -53,15 +50,12 @@ export async function syncVendor(
   const errors: Array<{ entity: string; id: string; message: string }> = [];
 
   try {
-    // Check connections exist
     const vendor = await prisma.vendor.findUniqueOrThrow({
       where: { id: vendorId },
       include: { qboConnection: true, stripeConnection: true },
     });
 
-    if (!vendor.qboConnection) {
-      throw new Error("Vendor missing QBO connection.");
-    }
+    if (!vendor.qboConnection) throw new Error("Vendor missing QBO connection.");
 
     const stripe: Stripe | null = vendor.stripeConnection
       ? await getVendorStripe(vendorId)
@@ -76,11 +70,10 @@ export async function syncVendor(
           : Promise.resolve([] as Stripe.Customer[]),
       ]);
 
-      for (const qboCustomer of qboCustomers) {
+      for (const c of qboCustomers) {
         try {
-          const mapped = qboCustomerToDb(qboCustomer, vendorId);
-          if (!mapped.email) continue; // skip customers without email
-
+          const mapped = qboCustomerToDb(c, vendorId);
+          if (!mapped.email) continue;
           await prisma.customer.upsert({
             where: { vendorId_email: { vendorId, email: mapped.email } },
             update: { qboCustomerId: mapped.qboCustomerId, name: mapped.name },
@@ -88,18 +81,14 @@ export async function syncVendor(
           });
           recordsProcessed++;
         } catch (err) {
-          errors.push({
-            entity: "customer",
-            id: qboCustomer.Id,
-            message: String(err),
-          });
+          errors.push({ entity: "customer", id: c.Id, message: String(err) });
         }
       }
 
-      for (const stripeCustomer of stripeCustomers) {
+      for (const c of stripeCustomers) {
         try {
-          if (!stripeCustomer.email) continue;
-          const mapped = stripeCustomerToDb(stripeCustomer, vendorId);
+          if (!c.email) continue;
+          const mapped = stripeCustomerToDb(c, vendorId);
           await prisma.customer.upsert({
             where: { vendorId_email: { vendorId, email: mapped.email } },
             update: { stripeCustomerId: mapped.stripeCustomerId },
@@ -107,11 +96,7 @@ export async function syncVendor(
           });
           recordsProcessed++;
         } catch (err) {
-          errors.push({
-            entity: "customer",
-            id: stripeCustomer.id,
-            message: String(err),
-          });
+          errors.push({ entity: "customer", id: c.id, message: String(err) });
         }
       }
     } catch (err) {
@@ -119,19 +104,12 @@ export async function syncVendor(
     }
 
     // ── 1.5. Push new QBO customers → Stripe ────────────────────────────────
-    // For every customer with a QBO ID but no Stripe ID, create them in Stripe
-    // so they can later be attached to Stripe invoices.
     if (stripe) {
       try {
-        const unlinkedCustomers = await prisma.customer.findMany({
-          where: {
-            vendorId,
-            qboCustomerId: { not: null },
-            stripeCustomerId: null,
-          },
+        const unlinked = await prisma.customer.findMany({
+          where: { vendorId, qboCustomerId: { not: null }, stripeCustomerId: null },
         });
-
-        for (const customer of unlinkedCustomers) {
+        for (const customer of unlinked) {
           try {
             const sc = await stripe.customers.create({
               name: customer.name,
@@ -144,62 +122,151 @@ export async function syncVendor(
             });
             recordsProcessed++;
           } catch (err) {
-            errors.push({
-              entity: "stripe_customer_create",
-              id: customer.id,
-              message: String(err),
-            });
+            errors.push({ entity: "stripe_customer_create", id: customer.id, message: String(err) });
           }
         }
       } catch (err) {
-        errors.push({
-          entity: "stripe_customer_push",
-          id: "batch",
-          message: String(err),
-        });
+        errors.push({ entity: "stripe_customer_push", id: "batch", message: String(err) });
+      }
+    }
+
+    // ── 1.7. Pull QBO items → DB (Products) ──────────────────────────────────
+    try {
+      const qboItems = await fetchQboItems(vendorId);
+      for (const item of qboItems) {
+        try {
+          const unitPrice = Math.round((item.UnitPrice ?? 0) * 100);
+          await prisma.product.upsert({
+            where: { vendorId_qboItemId: { vendorId, qboItemId: item.Id } },
+            update: {
+              name: item.Name,
+              description: item.Description ?? null,
+              unitPrice,
+              active: item.Active,
+              qboUpdatedAt: new Date(item.MetaData.LastUpdatedTime),
+            },
+            create: {
+              vendorId,
+              qboItemId: item.Id,
+              name: item.Name,
+              description: item.Description ?? null,
+              unitPrice,
+              active: item.Active,
+              qboUpdatedAt: new Date(item.MetaData.LastUpdatedTime),
+            },
+          });
+          recordsProcessed++;
+        } catch (err) {
+          errors.push({ entity: "product", id: item.Id, message: String(err) });
+        }
+      }
+    } catch (err) {
+      errors.push({ entity: "products", id: "batch", message: String(err) });
+    }
+
+    // ── 1.8. Push new/updated Products → Stripe ──────────────────────────────
+    if (stripe) {
+      try {
+        const products = await prisma.product.findMany({ where: { vendorId, active: true } });
+        for (const product of products) {
+          try {
+            if (!product.stripeProductId) {
+              // Create new Stripe Product + Price
+              const sp = await stripe.products.create({
+                name: product.name,
+                ...(product.description ? { description: product.description } : {}),
+                metadata: { qboItemId: product.qboItemId ?? "" },
+              });
+              let priceId: string | null = null;
+              if (product.unitPrice > 0) {
+                const price = await stripe.prices.create({
+                  product: sp.id,
+                  unit_amount: product.unitPrice,
+                  currency: "usd",
+                  billing_scheme: "per_unit",
+                });
+                priceId = price.id;
+              }
+              await prisma.product.update({
+                where: { id: product.id },
+                data: { stripeProductId: sp.id, stripePriceId: priceId },
+              });
+              recordsProcessed++;
+            } else {
+              // Sync name/description updates
+              await stripe.products.update(product.stripeProductId, {
+                name: product.name,
+                ...(product.description ? { description: product.description } : {}),
+              });
+              // Handle price change: Stripe prices are immutable, so archive + recreate
+              if (product.stripePriceId && product.unitPrice > 0) {
+                const existing = await stripe.prices.retrieve(product.stripePriceId);
+                if (existing.unit_amount !== product.unitPrice) {
+                  await stripe.prices.update(product.stripePriceId, { active: false });
+                  const newPrice = await stripe.prices.create({
+                    product: product.stripeProductId,
+                    unit_amount: product.unitPrice,
+                    currency: "usd",
+                    billing_scheme: "per_unit",
+                  });
+                  await prisma.product.update({
+                    where: { id: product.id },
+                    data: { stripePriceId: newPrice.id },
+                  });
+                  recordsProcessed++;
+                }
+              } else if (!product.stripePriceId && product.unitPrice > 0) {
+                const price = await stripe.prices.create({
+                  product: product.stripeProductId,
+                  unit_amount: product.unitPrice,
+                  currency: "usd",
+                  billing_scheme: "per_unit",
+                });
+                await prisma.product.update({
+                  where: { id: product.id },
+                  data: { stripePriceId: price.id },
+                });
+                recordsProcessed++;
+              }
+            }
+          } catch (err) {
+            errors.push({ entity: "stripe_product", id: product.id, message: String(err) });
+          }
+        }
+      } catch (err) {
+        errors.push({ entity: "stripe_products", id: "batch", message: String(err) });
       }
     }
 
     // ── 2. Pull QBO invoices + Stripe invoices → DB ──────────────────────────
+    let stripeInvoices: Stripe.Invoice[] = [];
     try {
-      const [qboInvoices, stripeInvoices] = await Promise.all([
+      const [qboInvoices, fetchedStripeInvoices] = await Promise.all([
         fetchQboInvoices(vendorId),
         stripe
           ? stripe.invoices.list({ limit: 100 }).then((r) => r.data)
           : Promise.resolve([] as Stripe.Invoice[]),
       ]);
+      stripeInvoices = fetchedStripeInvoices;
 
-      // Process QBO invoices
       for (const qboInvoice of qboInvoices) {
         try {
           const customer = await prisma.customer.findFirst({
-            where: {
-              vendorId,
-              qboCustomerId: qboInvoice.CustomerRef.value,
-            },
+            where: { vendorId, qboCustomerId: qboInvoice.CustomerRef.value },
           });
           if (!customer) continue;
 
           const mapped = qboInvoiceToDb(qboInvoice, vendorId, customer.id);
-
-          // Check if this invoice exists in Stripe too
           const existing = await prisma.invoice.findFirst({
             where: { vendorId, qboInvoiceId: qboInvoice.Id },
           });
-
-          const stripeUpdatedAt = existing?.stripeUpdatedAt ?? null;
-          const resolution = resolveConflict(mapped.qboUpdatedAt, stripeUpdatedAt);
+          const resolution = resolveConflict(mapped.qboUpdatedAt, existing?.stripeUpdatedAt ?? null);
 
           if (resolution.winner === "qbo" || !existing) {
             await prisma.invoice.upsert({
               where: existing
                 ? { id: existing.id }
-                : {
-                    vendorId_qboInvoiceId: {
-                      vendorId,
-                      qboInvoiceId: qboInvoice.Id,
-                    },
-                  },
+                : { vendorId_qboInvoiceId: { vendorId, qboInvoiceId: qboInvoice.Id } },
               update: {
                 status: mapped.status,
                 amountTotal: mapped.amountTotal,
@@ -213,24 +280,17 @@ export async function syncVendor(
             recordsProcessed++;
           }
         } catch (err) {
-          errors.push({
-            entity: "invoice",
-            id: qboInvoice.Id,
-            message: String(err),
-          });
+          errors.push({ entity: "invoice", id: qboInvoice.Id, message: String(err) });
         }
       }
 
-      // Process Stripe invoices
       for (const stripeInvoice of stripeInvoices) {
         try {
           if (!stripeInvoice.customer) continue;
-
           const stripeCustomerId =
             typeof stripeInvoice.customer === "string"
               ? stripeInvoice.customer
               : stripeInvoice.customer.id;
-
           const customer = await prisma.customer.findFirst({
             where: { vendorId, stripeCustomerId },
           });
@@ -240,20 +300,13 @@ export async function syncVendor(
           const existing = await prisma.invoice.findFirst({
             where: { vendorId, stripeInvoiceId: stripeInvoice.id },
           });
-
-          const qboUpdatedAt = existing?.qboUpdatedAt ?? null;
-          const resolution = resolveConflict(qboUpdatedAt, mapped.stripeUpdatedAt);
+          const resolution = resolveConflict(existing?.qboUpdatedAt ?? null, mapped.stripeUpdatedAt);
 
           if (resolution.winner === "stripe" || !existing) {
             await prisma.invoice.upsert({
               where: existing
                 ? { id: existing.id }
-                : {
-                    vendorId_stripeInvoiceId: {
-                      vendorId,
-                      stripeInvoiceId: stripeInvoice.id,
-                    },
-                  },
+                : { vendorId_stripeInvoiceId: { vendorId, stripeInvoiceId: stripeInvoice.id } },
               update: {
                 status: mapped.status,
                 amountTotal: mapped.amountTotal,
@@ -266,11 +319,7 @@ export async function syncVendor(
             recordsProcessed++;
           }
         } catch (err) {
-          errors.push({
-            entity: "invoice",
-            id: stripeInvoice.id,
-            message: String(err),
-          });
+          errors.push({ entity: "invoice", id: stripeInvoice.id, message: String(err) });
         }
       }
     } catch (err) {
@@ -278,8 +327,6 @@ export async function syncVendor(
     }
 
     // ── 2.5. Push unpaid QBO invoices → Stripe ───────────────────────────────
-    // For every open invoice with a QBO ID but no Stripe ID, create a finalized
-    // Stripe invoice so the customer can pay through the portal.
     if (stripe) {
       try {
         const unlinkedInvoices = await prisma.invoice.findMany({
@@ -295,7 +342,6 @@ export async function syncVendor(
 
         for (const invoice of unlinkedInvoices) {
           try {
-            // Customer must be in Stripe first (step 1.5 should have handled this)
             if (!invoice.customer.stripeCustomerId) {
               errors.push({
                 entity: "stripe_invoice_create",
@@ -304,61 +350,157 @@ export async function syncVendor(
               });
               continue;
             }
-
-            // Days until due (minimum 1 to satisfy Stripe)
             const daysUntilDue = invoice.dueDate
               ? Math.max(1, Math.round((invoice.dueDate.getTime() - Date.now()) / 86400000))
               : 30;
-
-            // 1. Create draft invoice
-            const draftInvoice = await stripe.invoices.create({
+            const draft = await stripe.invoices.create({
               customer: invoice.customer.stripeCustomerId,
               collection_method: "send_invoice",
               days_until_due: daysUntilDue,
               metadata: { qboInvoiceId: invoice.qboInvoiceId! },
-              ...(invoice.invoiceNumber
-                ? { description: `Invoice #${invoice.invoiceNumber}` }
-                : {}),
+              ...(invoice.invoiceNumber ? { description: `Invoice #${invoice.invoiceNumber}` } : {}),
             });
-
-            // 2. Add line item (the outstanding balance)
             await stripe.invoiceItems.create({
               customer: invoice.customer.stripeCustomerId,
-              invoice: draftInvoice.id,
+              invoice: draft.id,
               amount: invoice.amountDue,
               currency: invoice.currency,
               description: invoice.invoiceNumber
                 ? `Invoice #${invoice.invoiceNumber}`
                 : "Outstanding balance from QuickBooks",
             });
-
-            // 3. Finalize → moves draft → open (payable via hosted invoice page)
-            const finalized = await stripe.invoices.finalizeInvoice(draftInvoice.id);
-
-            // 4. Record the Stripe invoice ID in our DB
+            const finalized = await stripe.invoices.finalizeInvoice(draft.id);
             await prisma.invoice.update({
               where: { id: invoice.id },
-              data: {
-                stripeInvoiceId: finalized.id,
-                stripeUpdatedAt: new Date(),
-              },
+              data: { stripeInvoiceId: finalized.id, stripeUpdatedAt: new Date() },
             });
-
             recordsProcessed++;
           } catch (err) {
-            errors.push({
-              entity: "stripe_invoice_create",
-              id: invoice.id,
-              message: String(err),
-            });
+            errors.push({ entity: "stripe_invoice_create", id: invoice.id, message: String(err) });
           }
         }
       } catch (err) {
-        errors.push({
-          entity: "stripe_invoice_push",
-          id: "batch",
-          message: String(err),
+        errors.push({ entity: "stripe_invoice_push", id: "batch", message: String(err) });
+      }
+    }
+
+    // ── 2.6. Stripe-paid invoices → record Payment in DB + push to QBO ───────
+    // When a customer pays through Stripe, record the payment and write it back
+    // to QBO so the invoice is marked paid in the accounting system.
+    if (stripe) {
+      try {
+        for (const stripeInvoice of stripeInvoices) {
+          if (stripeInvoice.status !== "paid") continue;
+          try {
+            const dbInvoice = await prisma.invoice.findFirst({
+              where: { vendorId, stripeInvoiceId: stripeInvoice.id },
+              include: { customer: true },
+            });
+            if (!dbInvoice) continue;
+
+            // Deduplicate by stripe invoice ID — no payment_intent field in this SDK version
+            const existingPayment = await prisma.payment.findFirst({
+              where: { vendorId, invoiceId: dbInvoice.id, status: "SUCCEEDED" },
+            });
+            if (existingPayment) continue;
+
+            const payment = await prisma.payment.create({
+              data: {
+                vendorId,
+                invoiceId: dbInvoice.id,
+                customerId: dbInvoice.customerId,
+                amount: stripeInvoice.amount_paid,
+                currency: stripeInvoice.currency,
+                status: "SUCCEEDED",
+                stripeUpdatedAt: new Date(),
+              },
+            });
+            recordsProcessed++;
+
+            if (dbInvoice.qboInvoiceId && dbInvoice.customer.qboCustomerId) {
+              try {
+                const paidAt = stripeInvoice.status_transitions?.paid_at;
+                const txnDate = paidAt
+                  ? new Date(paidAt * 1000).toISOString().split("T")[0]
+                  : new Date().toISOString().split("T")[0];
+                const qboPayment = await createQboPayment(
+                  vendorId,
+                  dbInvoice.customer.qboCustomerId,
+                  dbInvoice.qboInvoiceId,
+                  stripeInvoice.amount_paid,
+                  txnDate
+                );
+                await prisma.payment.update({
+                  where: { id: payment.id },
+                  data: { qboPaymentId: qboPayment.Id, qboUpdatedAt: new Date() },
+                });
+              } catch (qboErr) {
+                errors.push({
+                  entity: "qbo_payment_create",
+                  id: dbInvoice.id,
+                  message: String(qboErr),
+                });
+              }
+            }
+          } catch (err) {
+            errors.push({ entity: "payment_stripe_to_qbo", id: stripeInvoice.id, message: String(err) });
+          }
+        }
+      } catch (err) {
+        errors.push({ entity: "payments_stripe_to_qbo", id: "batch", message: String(err) });
+      }
+    }
+
+    // ── 2.7. QBO-paid invoices → mark Stripe invoice paid_out_of_band ────────
+    // When QBO shows a payment received (e.g. check, bank transfer), mark the
+    // corresponding Stripe invoice as paid out-of-band so the customer portal
+    // reflects the correct status without processing another charge.
+    if (stripe) {
+      try {
+        const qboPaid = await prisma.invoice.findMany({
+          where: {
+            vendorId,
+            status: "PAID",
+            qboInvoiceId: { not: null },
+            stripeInvoiceId: { not: null },
+          },
+          include: { customer: true },
         });
+
+        for (const invoice of qboPaid) {
+          try {
+            const existingPayment = await prisma.payment.findFirst({
+              where: { vendorId, invoiceId: invoice.id, status: "SUCCEEDED" },
+            });
+            if (existingPayment) continue;
+
+            let stripeInv: Stripe.Invoice;
+            try {
+              stripeInv = await stripe.invoices.retrieve(invoice.stripeInvoiceId!);
+            } catch {
+              continue;
+            }
+            if (stripeInv.status !== "open") continue;
+
+            await stripe.invoices.pay(invoice.stripeInvoiceId!, { paid_out_of_band: true });
+            await prisma.payment.create({
+              data: {
+                vendorId,
+                invoiceId: invoice.id,
+                customerId: invoice.customerId,
+                amount: invoice.amountTotal,
+                currency: invoice.currency,
+                status: "SUCCEEDED",
+                stripeUpdatedAt: new Date(),
+              },
+            });
+            recordsProcessed++;
+          } catch (err) {
+            errors.push({ entity: "payment_qbo_to_stripe", id: invoice.id, message: String(err) });
+          }
+        }
+      } catch (err) {
+        errors.push({ entity: "payments_qbo_to_stripe", id: "batch", message: String(err) });
       }
     }
 
@@ -371,14 +513,8 @@ export async function syncVendor(
             where: { vendorId, qboCustomerId: memo.CustomerRef.value },
           });
           if (!customer) continue;
-
           await prisma.creditMemo.upsert({
-            where: {
-              vendorId_qboCreditMemoId: {
-                vendorId,
-                qboCreditMemoId: memo.Id,
-              },
-            },
+            where: { vendorId_qboCreditMemoId: { vendorId, qboCreditMemoId: memo.Id } },
             update: {
               amount: Math.round(memo.TotalAmt * 100),
               remainingCredit: Math.round(memo.Balance * 100),
@@ -396,11 +532,7 @@ export async function syncVendor(
           });
           recordsProcessed++;
         } catch (err) {
-          errors.push({
-            entity: "credit_memo",
-            id: memo.Id,
-            message: String(err),
-          });
+          errors.push({ entity: "credit_memo", id: memo.Id, message: String(err) });
         }
       }
     } catch (err) {
@@ -411,14 +543,9 @@ export async function syncVendor(
     const now = new Date();
     const periodStart = new Date(now.getFullYear(), now.getMonth(), 1);
     const periodEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59);
-
     await prisma.usageRecord.upsert({
-      where: {
-        id: `${vendorId}-${periodStart.toISOString().slice(0, 7)}`,
-      },
-      update: {
-        invoicesSynced: { increment: recordsProcessed },
-      },
+      where: { id: `${vendorId}-${periodStart.toISOString().slice(0, 7)}` },
+      update: { invoicesSynced: { increment: recordsProcessed } },
       create: {
         id: `${vendorId}-${periodStart.toISOString().slice(0, 7)}`,
         vendorId,
@@ -439,8 +566,6 @@ export async function syncVendor(
     await prisma.syncLog.update({
       where: { id: syncLog.id },
       data: {
-        // PARTIAL status requires the migration: npx prisma migrate dev --name add_partial_sync_status
-        // Until then all non-fatal syncs log as COMPLETED; partial failures are still in errors field.
         status: SyncStatus.COMPLETED,
         recordsProcessed,
         errors: errors.length > 0 ? errors : undefined,
