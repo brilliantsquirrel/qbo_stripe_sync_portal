@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import {
   Card,
   CardContent,
@@ -24,6 +24,7 @@ interface SyncLog {
 
 interface SyncResult {
   success: boolean;
+  queued?: boolean;
   recordsProcessed?: number;
   errors?: Array<{ entity: string; id: string; message: string }>;
   error?: string;
@@ -63,10 +64,13 @@ export default function SyncPage() {
   const [savingConfig, setSavingConfig] = useState(false);
   const [configSaved, setConfigSaved] = useState(false);
 
+  // Used to detect sync completion when the trigger is queued (production)
+  const pollingSinceRef = useRef<Date | null>(null);
+
   useEffect(() => {
     fetchLogs();
     fetchConfig();
-    const interval = setInterval(fetchLogs, 10000);
+    const interval = setInterval(fetchLogs, 3000);
     return () => clearInterval(interval);
   }, []);
 
@@ -99,9 +103,26 @@ export default function SyncPage() {
 
   async function fetchLogs() {
     const res = await fetch("/api/vendor/sync-logs");
-    if (res.ok) {
-      const data = await res.json();
-      setLogs(data.logs);
+    if (!res.ok) return;
+    const data = await res.json();
+    setLogs(data.logs);
+
+    // If we triggered a queued sync, poll until it completes
+    if (pollingSinceRef.current) {
+      const since = pollingSinceRef.current;
+      const completed = (data.logs as SyncLog[]).find(
+        (log) => log.status !== "RUNNING" && new Date(log.startedAt) >= since
+      );
+      if (completed) {
+        pollingSinceRef.current = null;
+        setTriggering(false);
+        setLastResult({
+          success: completed.status === "COMPLETED" || completed.status === "PARTIAL",
+          recordsProcessed: completed.recordsProcessed,
+          errors: completed.errors ?? undefined,
+          error: completed.status === "FAILED" ? "Sync failed — check logs below" : undefined,
+        });
+      }
     }
   }
 
@@ -123,20 +144,43 @@ export default function SyncPage() {
     setLastResult(null);
     try {
       const res = await fetch("/api/sync/trigger", { method: "POST" });
-      let result: SyncResult = { success: false };
+      let result: SyncResult;
       try {
         result = await res.json();
       } catch {
         result = { success: false, error: `Server error ${res.status}` };
       }
-      setLastResult(result);
-      await fetchLogs();
+
+      if (res.status === 409) {
+        setLastResult({ success: false, error: "A sync is already running — wait for it to finish." });
+        setTriggering(false);
+        return;
+      }
+
+      if (!res.ok) {
+        setLastResult({ success: false, error: result.error ?? `Server error ${res.status}` });
+        setTriggering(false);
+        return;
+      }
+
+      if (result.queued) {
+        // Production: sync was enqueued — poll fetchLogs until a completed entry appears
+        pollingSinceRef.current = new Date();
+        await fetchLogs();
+        // triggering stays true until pollingSinceRef is cleared by fetchLogs
+      } else {
+        // Development: sync ran inline and returned full results
+        setLastResult(result);
+        await fetchLogs();
+        setTriggering(false);
+      }
     } catch (err) {
       setLastResult({ success: false, error: err instanceof Error ? err.message : "Network error" });
-    } finally {
       setTriggering(false);
     }
   }
+
+  const syncRunning = triggering || logs.some((l) => l.status === "RUNNING");
 
   return (
     <div className="space-y-6">
@@ -146,8 +190,8 @@ export default function SyncPage() {
           <Button variant="destructive" onClick={clearStripeInvoices} disabled={clearingInvoices}>
             {clearingInvoices ? "Clearing…" : "Delete Unpaid Stripe Invoices"}
           </Button>
-          <Button onClick={triggerSync} disabled={triggering}>
-            {triggering ? "Syncing…" : "Sync Now"}
+          <Button onClick={triggerSync} disabled={syncRunning}>
+            {syncRunning ? "Syncing…" : "Sync Now"}
           </Button>
         </div>
       </div>
@@ -155,6 +199,13 @@ export default function SyncPage() {
       {clearResult && (
         <div className="rounded-md border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-800">
           Cleared Stripe invoices — <strong>{clearResult.deleted} deleted</strong>, <strong>{clearResult.voided} voided</strong>.
+        </div>
+      )}
+
+      {/* Pending banner while waiting for queued sync */}
+      {triggering && !lastResult && (
+        <div className="rounded-md border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-800">
+          ⏳ Sync in progress — waiting for results…
         </div>
       )}
 
