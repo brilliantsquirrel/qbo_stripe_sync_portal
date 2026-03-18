@@ -257,27 +257,42 @@ export async function syncVendor(
           if (!customer) continue;
 
           const mapped = qboInvoiceToDb(qboInvoice, vendorId, customer.id);
-          const existing = await prisma.invoice.findFirst({
+
+          // Primary lookup by QBO ID; fall back to invoice number to avoid duplicates
+          let existing = await prisma.invoice.findFirst({
             where: { vendorId, qboInvoiceId: qboInvoice.Id },
           });
-          const resolution = resolveConflict(mapped.qboUpdatedAt, existing?.stripeUpdatedAt ?? null);
-
-          if (resolution.winner === "qbo" || !existing) {
-            await prisma.invoice.upsert({
-              where: existing
-                ? { id: existing.id }
-                : { vendorId_qboInvoiceId: { vendorId, qboInvoiceId: qboInvoice.Id } },
-              update: {
-                status: mapped.status,
-                amountTotal: mapped.amountTotal,
-                amountPaid: mapped.amountPaid,
-                amountDue: mapped.amountDue,
-                dueDate: mapped.dueDate,
-                qboUpdatedAt: mapped.qboUpdatedAt,
-              },
-              create: mapped,
+          if (!existing && qboInvoice.DocNumber) {
+            existing = await prisma.invoice.findFirst({
+              where: { vendorId, customerId: customer.id, invoiceNumber: qboInvoice.DocNumber },
             });
+          }
+
+          const resolution = resolveConflict(mapped.qboUpdatedAt, existing?.stripeUpdatedAt ?? null);
+          if (resolution.winner === "qbo" || !existing) {
+            if (existing) {
+              await prisma.invoice.update({
+                where: { id: existing.id },
+                data: {
+                  qboInvoiceId: mapped.qboInvoiceId,
+                  status: mapped.status,
+                  amountTotal: mapped.amountTotal,
+                  amountPaid: mapped.amountPaid,
+                  amountDue: mapped.amountDue,
+                  dueDate: mapped.dueDate,
+                  qboUpdatedAt: mapped.qboUpdatedAt,
+                },
+              });
+            } else {
+              await prisma.invoice.create({ data: mapped });
+            }
             recordsProcessed++;
+          } else if (existing && !existing.qboInvoiceId) {
+            // QBO didn't win conflict resolution, but still write back the link
+            await prisma.invoice.update({
+              where: { id: existing.id },
+              data: { qboInvoiceId: mapped.qboInvoiceId, qboUpdatedAt: mapped.qboUpdatedAt },
+            });
           }
         } catch (err) {
           errors.push({ entity: "invoice", id: qboInvoice.Id, message: String(err) });
@@ -297,26 +312,48 @@ export async function syncVendor(
           if (!customer) continue;
 
           const mapped = stripeInvoiceToDb(stripeInvoice, vendorId, customer.id);
-          const existing = await prisma.invoice.findFirst({
+
+          // Primary lookup by Stripe ID
+          let existing = await prisma.invoice.findFirst({
             where: { vendorId, stripeInvoiceId: stripeInvoice.id },
           });
-          const resolution = resolveConflict(existing?.qboUpdatedAt ?? null, mapped.stripeUpdatedAt);
-
-          if (resolution.winner === "stripe" || !existing) {
-            await prisma.invoice.upsert({
-              where: existing
-                ? { id: existing.id }
-                : { vendorId_stripeInvoiceId: { vendorId, stripeInvoiceId: stripeInvoice.id } },
-              update: {
-                status: mapped.status,
-                amountTotal: mapped.amountTotal,
-                amountPaid: mapped.amountPaid,
-                amountDue: mapped.amountDue,
-                stripeUpdatedAt: mapped.stripeUpdatedAt,
-              },
-              create: mapped,
+          // Fallback 1: QBO invoice ID stored in Stripe metadata
+          if (!existing && stripeInvoice.metadata?.qboInvoiceId) {
+            existing = await prisma.invoice.findFirst({
+              where: { vendorId, qboInvoiceId: stripeInvoice.metadata.qboInvoiceId },
             });
+          }
+          // Fallback 2: invoice number + customer
+          if (!existing && stripeInvoice.number) {
+            existing = await prisma.invoice.findFirst({
+              where: { vendorId, customerId: customer.id, invoiceNumber: stripeInvoice.number },
+            });
+          }
+
+          const resolution = resolveConflict(existing?.qboUpdatedAt ?? null, mapped.stripeUpdatedAt);
+          if (resolution.winner === "stripe" || !existing) {
+            if (existing) {
+              await prisma.invoice.update({
+                where: { id: existing.id },
+                data: {
+                  stripeInvoiceId: stripeInvoice.id,
+                  status: mapped.status,
+                  amountTotal: mapped.amountTotal,
+                  amountPaid: mapped.amountPaid,
+                  amountDue: mapped.amountDue,
+                  stripeUpdatedAt: mapped.stripeUpdatedAt,
+                },
+              });
+            } else {
+              await prisma.invoice.create({ data: mapped });
+            }
             recordsProcessed++;
+          } else if (existing && !existing.stripeInvoiceId) {
+            // Stripe didn't win conflict resolution, but still write back the link
+            await prisma.invoice.update({
+              where: { id: existing.id },
+              data: { stripeInvoiceId: stripeInvoice.id, stripeUpdatedAt: mapped.stripeUpdatedAt },
+            });
           }
         } catch (err) {
           errors.push({ entity: "invoice", id: stripeInvoice.id, message: String(err) });
