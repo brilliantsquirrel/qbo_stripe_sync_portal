@@ -98,6 +98,45 @@ export async function POST(req: NextRequest) {
         break;
       }
 
+      // Fired when a Stripe-hosted invoice is paid (covers native invoice payment
+      // flows where no payment_intent metadata points back to our invoiceId).
+      case "invoice.paid": {
+        const stripeInvoice = event.data.object as Stripe.Invoice;
+        if (!connectedAccountId) break;
+
+        const connection = await prisma.stripeConnection.findFirst({
+          where: { stripeAccountId: connectedAccountId },
+          select: { vendorId: true },
+        });
+        if (!connection) break;
+
+        const { vendorId } = connection;
+        const dbInvoice = await prisma.invoice.findFirst({
+          where: { vendorId, stripeInvoiceId: stripeInvoice.id },
+        });
+        if (!dbInvoice) break;
+
+        const existingPayment = await prisma.payment.findFirst({
+          where: { vendorId, invoiceId: dbInvoice.id, status: "SUCCEEDED" },
+        });
+        if (existingPayment) break;
+
+        await prisma.payment.create({
+          data: {
+            vendorId,
+            invoiceId: dbInvoice.id,
+            customerId: dbInvoice.customerId,
+            amount: stripeInvoice.amount_paid,
+            currency: stripeInvoice.currency,
+            status: PaymentStatus.SUCCEEDED,
+            stripeUpdatedAt: new Date(),
+          },
+        });
+
+        void syncPaymentToQbo(vendorId, dbInvoice.id, dbInvoice.customerId, null, stripeInvoice.amount_paid);
+        break;
+      }
+
       case "payment_intent.payment_failed": {
         const intent = event.data.object as Stripe.PaymentIntent;
         await prisma.payment.updateMany({
@@ -166,7 +205,8 @@ async function syncPaymentToQbo(
   vendorId: string,
   invoiceId: string,
   customerId: string,
-  intent: Stripe.PaymentIntent
+  intent: Stripe.PaymentIntent | null,
+  amountOverride?: number
 ): Promise<void> {
   try {
     const [invoice, customer] = await Promise.all([
@@ -176,22 +216,29 @@ async function syncPaymentToQbo(
 
     if (!invoice?.qboInvoiceId || !customer?.qboCustomerId) return;
 
+    const amount = intent?.amount ?? amountOverride ?? 0;
+    if (!amount) return;
+
     const txnDate = new Date().toISOString().split("T")[0];
     const qboPayment = await createQboPayment(
       vendorId,
       customer.qboCustomerId,
       invoice.qboInvoiceId,
-      intent.amount,
+      amount,
       txnDate
     );
 
-    await prisma.payment.updateMany({
-      where: { stripePaymentIntentId: intent.id },
-      data: {
-        qboPaymentId: qboPayment.Id,
-        qboUpdatedAt: new Date(),
-      },
-    });
+    if (intent) {
+      await prisma.payment.updateMany({
+        where: { stripePaymentIntentId: intent.id },
+        data: { qboPaymentId: qboPayment.Id, qboUpdatedAt: new Date() },
+      });
+    } else {
+      await prisma.payment.updateMany({
+        where: { vendorId, invoiceId, status: "SUCCEEDED", qboPaymentId: null },
+        data: { qboPaymentId: qboPayment.Id, qboUpdatedAt: new Date() },
+      });
+    }
   } catch (err) {
     console.error("Failed to sync payment to QBO:", err);
   }

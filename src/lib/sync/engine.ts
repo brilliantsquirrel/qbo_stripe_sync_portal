@@ -541,6 +541,47 @@ export async function syncVendor(
       }
     }
 
+    // ── 2.8. QBO-paid invoices with no Stripe link → record Payment in DB ────
+    // Invoices paid via check/ACH/bank transfer in QBO may never have been
+    // pushed to Stripe, so steps 2.6 and 2.7 both skip them. Record a Payment
+    // here so the DB stays consistent with QBO.
+    try {
+      const qboPaidNoStripe = await prisma.invoice.findMany({
+        where: {
+          vendorId,
+          status: "PAID",
+          qboInvoiceId: { not: null },
+          stripeInvoiceId: null,
+        },
+      });
+
+      for (const invoice of qboPaidNoStripe) {
+        try {
+          const existingPayment = await prisma.payment.findFirst({
+            where: { vendorId, invoiceId: invoice.id, status: "SUCCEEDED" },
+          });
+          if (existingPayment) continue;
+
+          await prisma.payment.create({
+            data: {
+              vendorId,
+              invoiceId: invoice.id,
+              customerId: invoice.customerId,
+              amount: invoice.amountTotal,
+              currency: invoice.currency,
+              status: "SUCCEEDED",
+              qboUpdatedAt: invoice.qboUpdatedAt ?? new Date(),
+            },
+          });
+          recordsProcessed++;
+        } catch (err) {
+          errors.push({ entity: "payment_qbo_only", id: invoice.id, message: String(err) });
+        }
+      }
+    } catch (err) {
+      errors.push({ entity: "payments_qbo_only", id: "batch", message: String(err) });
+    }
+
     // ── 3. Pull QBO credit memos → DB ────────────────────────────────────────
     try {
       const creditMemos = await fetchQboCreditMemos(vendorId);
