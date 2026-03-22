@@ -60,7 +60,16 @@ export async function POST(
       },
     });
 
-    return NextResponse.json({ clientSecret: result.clientSecret });
+    // Return the connected account ID so the client can load Stripe correctly
+    const connection = await prisma.stripeConnection.findUnique({
+      where: { vendorId: customer.vendorId },
+      select: { stripeAccountId: true },
+    });
+
+    return NextResponse.json({
+      clientSecret: result.clientSecret,
+      stripeAccountId: connection?.stripeAccountId ?? null,
+    });
   } catch (err) {
     return NextResponse.json({ error: String(err) }, { status: 500 });
   }

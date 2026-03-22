@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useMemo } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { loadStripe } from "@stripe/stripe-js";
 import {
@@ -11,10 +11,6 @@ import {
 } from "@stripe/react-stripe-js";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-
-const stripePromise = loadStripe(
-  process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY!
-);
 
 // ─── Inner checkout form (needs to be inside <Elements>) ─────────────────────
 function CheckoutForm({
@@ -82,11 +78,21 @@ export default function PayPage() {
   const router = useRouter();
 
   const [clientSecret, setClientSecret] = useState<string | null>(null);
+  const [stripeAccountId, setStripeAccountId] = useState<string | null>(null);
   const [amountCents, setAmountCents] = useState(0);
   const [currency, setCurrency] = useState("usd");
   const [invoiceNumber, setInvoiceNumber] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+
+  // Build the Stripe promise scoped to the vendor's connected account.
+  // Must be memoized so <Elements> doesn't remount on every render.
+  const stripePromise = useMemo(() => {
+    if (!stripeAccountId) return null;
+    return loadStripe(process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY!, {
+      stripeAccount: stripeAccountId,
+    });
+  }, [stripeAccountId]);
 
   const initPayment = useCallback(async () => {
     try {
@@ -113,6 +119,7 @@ export default function PayPage() {
 
       const data = await piRes.json();
       setClientSecret(data.clientSecret);
+      setStripeAccountId(data.stripeAccountId);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong");
     } finally {
@@ -173,7 +180,7 @@ export default function PayPage() {
           </CardTitle>
         </CardHeader>
         <CardContent>
-          {clientSecret && (
+          {clientSecret && stripePromise && (
             <Elements
               stripe={stripePromise}
               options={{
