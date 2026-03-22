@@ -22,6 +22,7 @@ export async function createPaymentIntent(
     amount: amountCents,
     currency,
     customer: customer.stripeCustomerId ?? undefined,
+    payment_method_types: ["card", "us_bank_account"],
     setup_future_usage: "off_session", // allow saving the card
     metadata: {
       vendorId,
