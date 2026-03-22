@@ -18,6 +18,10 @@ COPY . .
 # Generate Prisma client
 RUN npx prisma generate
 
+# NEXT_PUBLIC_ vars are inlined at build time — must be provided as build args
+ARG NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY
+ENV NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY=$NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY
+
 ENV NEXT_TELEMETRY_DISABLED=1
 RUN npm run build
 

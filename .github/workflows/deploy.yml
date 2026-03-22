@@ -40,6 +40,7 @@ jobs:
         run: |
           docker build \
             --target runner \
+            --build-arg NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY=${{ secrets.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY }} \
             --tag ${{ env.IMAGE_NAME }}:${{ github.sha }} \
             --tag ${{ env.IMAGE_NAME }}:latest \
             .
