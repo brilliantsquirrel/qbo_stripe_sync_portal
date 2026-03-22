@@ -29,6 +29,7 @@ function CheckoutForm({
   const stripe = useStripe();
   const elements = useElements();
 
+  const [ready, setReady] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -39,16 +40,21 @@ function CheckoutForm({
     setSubmitting(true);
     setError(null);
 
-    const { error: stripeError } = await stripe.confirmPayment({
-      elements,
-      confirmParams: {
-        return_url: `${window.location.origin}/invoices/${invoiceId}?paid=1`,
-      },
-    });
+    try {
+      const { error: stripeError } = await stripe.confirmPayment({
+        elements,
+        confirmParams: {
+          return_url: `${window.location.origin}/invoices/${invoiceId}?paid=1`,
+        },
+      });
 
-    // Only reached if confirmPayment doesn't redirect (i.e. an error occurred)
-    if (stripeError) {
-      setError(stripeError.message ?? "Payment failed. Please try again.");
+      // Only reached if confirmPayment doesn't redirect (i.e. an error occurred)
+      if (stripeError) {
+        setError(stripeError.message ?? "Payment failed. Please try again.");
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Payment failed. Please try again.");
+    } finally {
       setSubmitting(false);
     }
   }
@@ -60,7 +66,10 @@ function CheckoutForm({
 
   return (
     <form onSubmit={handleSubmit} className="space-y-6">
-      <PaymentElement />
+      {/* min-h ensures the iframe has space to render before the ready event fires */}
+      <div className="min-h-[200px]">
+        <PaymentElement onReady={() => setReady(true)} />
+      </div>
 
       {error && (
         <div className="rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
@@ -68,7 +77,11 @@ function CheckoutForm({
         </div>
       )}
 
-      <Button type="submit" disabled={!stripe || submitting} className="w-full">
+      <Button
+        type="submit"
+        disabled={!stripe || !ready || submitting}
+        className="w-full"
+      >
         {submitting ? "Processing…" : `Pay ${formatted}`}
       </Button>
     </form>
