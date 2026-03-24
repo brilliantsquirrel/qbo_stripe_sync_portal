@@ -8,7 +8,7 @@ function getResend(): Resend {
 }
 
 const FROM = process.env.EMAIL_FROM ?? "noreply@example.com";
-const APP_NAME = "QBO Stripe Sync Portal";
+const APP_NAME = "Synvio";
 
 interface MagicLinkEmailParams {
   to: string;

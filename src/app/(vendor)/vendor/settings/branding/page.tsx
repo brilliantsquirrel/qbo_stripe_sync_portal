@@ -139,12 +139,12 @@ export default function BrandingPage() {
               <Label htmlFor="siteName">Site name</Label>
               <Input
                 id="siteName"
-                placeholder="QBO Stripe Sync Portal"
+                placeholder="Synvio"
                 value={form.siteName}
                 onChange={(e) => set("siteName", e.target.value)}
               />
               <p className="text-xs text-gray-500 mt-1">
-                Shown in the vendor admin header and browser tab. Defaults to &ldquo;QBO Stripe Sync Portal&rdquo;.
+                Shown in the vendor admin header and browser tab. Defaults to &ldquo;Synvio&rdquo;.
               </p>
             </div>
             <div>

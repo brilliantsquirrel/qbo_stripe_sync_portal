@@ -21,6 +21,7 @@ function ConnectionsPageInner() {
   const [stripeConnected, setStripeConnected] = useState(false);
   const [stripeAccountId, setStripeAccountId] = useState<string | null>(null);
   const [disconnecting, setDisconnecting] = useState(false);
+  const [qboDisconnecting, setQboDisconnecting] = useState(false);
 
   useEffect(() => {
     fetch("/api/vendor/settings")
@@ -37,6 +38,17 @@ function ConnectionsPageInner() {
     const res = await fetch("/api/vendor/connect/qbo", { method: "POST" });
     const data = await res.json();
     if (data.authUri) window.location.href = data.authUri;
+  }
+
+  async function handleQboDisconnect() {
+    if (!confirm("Disconnect QuickBooks Online? Syncing will stop until you reconnect.")) return;
+    setQboDisconnecting(true);
+    try {
+      const res = await fetch("/api/vendor/connect/qbo", { method: "DELETE" });
+      if (res.ok) setQboConnected(false);
+    } finally {
+      setQboDisconnecting(false);
+    }
   }
 
   function handleStripeConnect() {
@@ -98,10 +110,19 @@ function ConnectionsPageInner() {
             Connect your QBO company to sync invoices, customers, and payments.
           </CardDescription>
         </CardHeader>
-        <CardContent>
+        <CardContent className="flex gap-3">
           <Button onClick={handleQboConnect} variant={qboConnected ? "outline" : "default"}>
             {qboConnected ? "Reconnect QuickBooks" : "Connect QuickBooks"}
           </Button>
+          {qboConnected && (
+            <Button
+              variant="destructive"
+              onClick={handleQboDisconnect}
+              disabled={qboDisconnecting}
+            >
+              {qboDisconnecting ? "Disconnecting…" : "Disconnect"}
+            </Button>
+          )}
         </CardContent>
       </Card>
 

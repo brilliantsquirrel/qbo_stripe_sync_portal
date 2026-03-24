@@ -30,7 +30,7 @@ export default async function VendorLayout({
     select: { siteName: true, logoUrl: true, faviconUrl: true },
   });
 
-  const displayName = branding?.siteName || "QBO Stripe Sync Portal";
+  const displayName = branding?.siteName || "Synvio";
 
   return (
     <div className="min-h-screen bg-gray-50">
