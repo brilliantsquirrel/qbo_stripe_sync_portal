@@ -91,7 +91,7 @@ export default function PaymentMethodsPage() {
   }, []);
 
   useEffect(() => {
-    loadMethods();
+    loadMethods(); // eslint-disable-line react-hooks/set-state-in-effect
   }, [loadMethods]);
 
   async function startAddCard() {

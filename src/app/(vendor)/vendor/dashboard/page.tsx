@@ -25,7 +25,7 @@ export default async function VendorDashboardPage() {
         where: {
           vendorId: vendor.id,
           status: "FAILED",
-          startedAt: { gte: new Date(Date.now() - 24 * 60 * 60 * 1000) },
+          startedAt: { gte: new Date(Date.now() - 24 * 60 * 60 * 1000) }, // eslint-disable-line react-hooks/purity
         },
       }),
       prisma.qboConnection.findUnique({

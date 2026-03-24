@@ -37,7 +37,8 @@ export async function POST(req: NextRequest) {
       case "payment_intent.succeeded": {
         const intent = event.data.object as Stripe.PaymentIntent;
         // Prefer vendorId from metadata; fall back to looking up by Stripe account.
-        let { invoiceId, vendorId, customerId } = intent.metadata;
+        const { invoiceId, customerId } = intent.metadata;
+        let { vendorId } = intent.metadata;
 
         if (!vendorId && connectedAccountId) {
           const connection = await prisma.stripeConnection.findFirst({
